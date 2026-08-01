@@ -2,4 +2,4 @@
 
 from __future__ import annotations
 
-__all__ = ["hermes", "langchain", "mcp"]
+__all__ = ["hermes_plugin", "langchain_tool", "mcp_server"]

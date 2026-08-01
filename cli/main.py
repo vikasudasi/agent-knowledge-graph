@@ -6,12 +6,14 @@ from typing import Annotated
 
 import typer
 from rich.console import Console
-from rich.table import Table
 
+from cli.build import app as build_app
 from cli.init import run_init
 from cli.llm import app as llm_app
 from cli.query import app as query_app
-from core.config import load_config
+from cli.status import app as status_app
+from cli.visualize import app as visualize_app
+from cli.watch import app as watch_app
 
 app = typer.Typer(
     name="kg",
@@ -20,6 +22,10 @@ app = typer.Typer(
 )
 app.add_typer(llm_app, name="llm", help="LLM provider commands (ping, extract)")
 app.add_typer(query_app, name="query", help="Query the knowledge graph")
+app.add_typer(build_app, name="build", help="Build the knowledge graph from pipelines")
+app.add_typer(status_app, name="status", help="Show graph status and statistics")
+app.add_typer(visualize_app, name="visualize", help="Visualize the graph")
+app.add_typer(watch_app, name="watch", help="Watch mode — auto-ingest")
 
 
 @app.command()
@@ -32,47 +38,6 @@ def init(
 ) -> None:
     """Initialize Neo4j and create schema."""
     run_init(reset=reset, with_docker=with_docker)
-
-
-@app.command()
-def build(
-    pipeline: Annotated[str, typer.Argument(help="Pipeline name (sessions, files)")],
-    full: Annotated[bool, typer.Option("--full", help="Full rebuild from scratch")] = False,
-    limit: Annotated[int | None, typer.Option("--limit", help="Max items to process")] = None,
-) -> None:
-    """Run an ingestion pipeline."""
-    _ = full
-    _ = limit
-    typer.echo(f"[kg] build {pipeline} not yet implemented")
-
-
-@app.command()
-def status() -> None:
-    """Show knowledge graph stats and health."""
-    from core.graph import Neo4jClient
-
-    cfg = load_config(auto_create=False)
-    try:
-        with Neo4jClient(cfg) as client:
-            stats = client.get_stats()
-            console = Console()
-            table = Table(title="Knowledge Graph Status")
-            table.add_column("Metric", style="bold")
-            table.add_column("Value")
-            table.add_row("Nodes", str(stats.node_count))
-            table.add_row("Relationships", str(stats.relationship_count))
-            table.add_row(
-                "Vector Index",
-                "[green]✓ Ready[/]" if stats.vector_index_ready else "[red]✗ Not found[/]",
-            )
-            for name, cp in stats.last_checkpoints.items():
-                table.add_row(
-                    f"Checkpoint: {name}",
-                    f"{cp.total_processed} items, last: {cp.last_processed_id[:20]}...",
-                )
-            console.print(table)
-    except Exception as exc:
-        Console().print(f"[red]Cannot connect to Neo4j: {exc}[/]")
 
 
 # ---------------------------------------------------------------------------
