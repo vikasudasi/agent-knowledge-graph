@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from cli.init import run_init
+from cli.llm import app as llm_app
 from core.config import load_config
 
 app = typer.Typer(
@@ -16,6 +17,7 @@ app = typer.Typer(
     help="agent-knowledge-graph — Persistent knowledge for AI agents",
     rich_markup_mode="rich",
 )
+app.add_typer(llm_app, name="llm", help="LLM provider commands (ping, extract)")
 
 
 @app.command()

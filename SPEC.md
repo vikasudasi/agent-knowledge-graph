@@ -1,849 +1,698 @@
-# agent-knowledge-graph — Storage Layer (Task 3)
+# agent-knowledge-graph — LLM Abstraction Layer (Task 4)
 
 ## What to Build
 
-Implement the Neo4j storage layer — the core data driver that every other component depends on. This provides a single backend for both property graph traversal and vector (semantic) search.
+Implement a provider-agnostic LLM abstraction layer with OpenRouter as the default provider. Pipelines use this for entity/relation extraction and the query layer uses it for NL→Cypher translation.
 
-## Files to Modify
+## Files to Create/Modify
 
-- `core/graph.py` — full `Neo4jClient` implementation
-- `core/models.py` — add Resource, Relationship, PipelineCheckpoint models
-- `core/__init__.py` — export new classes
-- `tests/conftest.py` — add Neo4j fixtures (mocked)
-- `tests/test_graph.py` — create comprehensive test suite
-- `cli/init.py` — wire schema initialization
+- `core/llm.py` — full replacement with `LLMClient`, `OpenRouterProvider`, `LLMProviderFactory`
+- `cli/llm.py` — `kg llm` test commands (ping a model, test structured extraction)
+- `tests/test_llm.py` — comprehensive test suite
+- `core/__init__.py` — update exports
 
-## Detailed Implementation
+## Requirements
 
-### 1. Data Models (core/models.py)
+1. **`LLMClient`** — abstract base with `chat()`, `extract_structured()`, `generate()`
+2. **`OpenRouterProvider`** — OpenAI-compatible client hitting `https://openrouter.ai/api/v1`
+3. **Structured extraction** — uses `response_format={"type": "json_object"}` with Pydantic schema validation + fallback parsing
+4. **Separate models** — `default_model`, `extraction_model`, `query_model` from config
+5. **Retry** — 3 attempts with exponential backoff (2s, 4s, 8s)
+6. **Token tracking** — approximate counting via `tiktoken` for logging
+7. **Error handling** — rate limits, timeouts, invalid JSON — all with descriptive messages
+8. **`LLMProviderFactory`** — creates the right provider from `config.llm.provider`
+9. **Extensible** — adding Anthropic or OpenAI is one class + a config entry
 
-Add these models alongside the existing `MemoryRecord`:
+## Implementation Details
+
+### core/llm.py
 
 ```python
-"""Pydantic data models used across the repository."""
+"""Provider-agnostic LLM abstraction with OpenRouter default."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any
-
-
-@dataclass
-class Resource:
-    """A node in the knowledge graph."""
-    id: str
-    type: str  # "session", "entity", "memory", "file", "task", "artifact"
-    label: str  # Human-readable name
-    properties: dict[str, Any] = field(default_factory=dict)
-    embedding: list[float] | None = None
-    ingested_at: datetime | None = None
-
-
-@dataclass
-class Relationship:
-    """A directed edge between two Resources."""
-    source_id: str
-    target_id: str
-    type: str  # "mentions", "produces", "uses", "references", "depends_on", "resolves"
-    properties: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
-class PipelineCheckpoint:
-    """Tracks pipeline progress for idempotent incremental runs."""
-    pipeline_name: str
-    last_processed_id: str = ""
-    last_processed_timestamp: datetime | None = None
-    total_processed: int = 0
-    updated_at: datetime | None = None
-
-
-@dataclass
-class QueryResult:
-    """Result from a knowledge graph query."""
-    nodes: list[Resource] = field(default_factory=list)
-    relationships: list[Relationship] = field(default_factory=list)
-    scores: list[float] | None = None
-    execution_time_ms: float = 0.0
-
-
-@dataclass
-class GraphStats:
-    """Statistics about the knowledge graph."""
-    node_count: int = 0
-    relationship_count: int = 0
-    vector_index_ready: bool = False
-    last_checkpoints: dict[str, PipelineCheckpoint] = field(default_factory=dict)
-    database_size_mb: float = 0.0
-```
-
-### 2. Neo4jClient (core/graph.py)
-
-Replace the stub with a full implementation:
-
-```python
-"""Neo4j graph client — connection, schema, CRUD, and query operations."""
-
-from __future__ import annotations
-
+import json
 import logging
 import time
-from contextlib import contextmanager
-from datetime import datetime, timezone
-from typing import Any, Generator
+from abc import ABC, abstractmethod
+from typing import Any
 
-from neo4j import GraphDatabase, Driver, Session, SessionConfig, Result, exceptions as neo4j_exc
+import httpx
+from pydantic import BaseModel, ValidationError
 
-from core.config import KGConfig
-from core.models import GraphStats, PipelineCheckpoint, QueryResult, Resource, Relationship
+from core.config import KGConfig, LLMConfig
 
 logger = logging.getLogger(__name__)
 
+# ── Exceptions ──────────────────────────────────────────────────────
 
-class Neo4jClient:
-    """Manages a Neo4j connection pool and provides high-level graph operations.
+class LLMError(Exception):
+    """Base LLM error."""
 
-    Usage:
-        with Neo4jClient(config) as client:
-            client.initialize_schema()
-            client.upsert_resource(...)
-    """
+class LLMRateLimitError(LLMError):
+    """Rate limited."""
 
-    def __init__(self, config: KGConfig) -> None:
+class LLMTimeoutError(LLMError):
+    """Request timed out."""
+
+class LLMInvalidResponseError(LLMError):
+    """Response could not be parsed."""
+
+class LLMAuthenticationError(LLMError):
+    """Invalid API key."""
+
+# ── Schema helpers ──────────────────────────────────────────────────
+
+def _ensure_system_prompt(messages: list[dict[str, str]], default_system: str) -> list[dict[str, str]]:
+    """Prepend a system message if not present."""
+    if not messages or messages[0].get("role") != "system":
+        return [{"role": "system", "content": default_system}] + messages
+    return messages
+
+
+def _count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
+    """Approximate token count using tiktoken. Falls back to rough char/4 estimate."""
+    try:
+        import tiktoken
+        encoding = tiktoken.encoding_for_model(model)
+        return len(encoding.encode(text))
+    except Exception:
+        return len(text) // 4
+
+
+def _parse_json_response(text: str) -> dict[str, Any] | list[Any]:
+    """Parse JSON from response text. Handles markdown code fences."""
+    text = text.strip()
+    # Strip ```json ... ``` fences
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.startswith("json"):
+            text = text[4:].strip()
+    return json.loads(text)
+
+
+# ── Abstract Base ───────────────────────────────────────────────────
+
+class LLMClient(ABC):
+    """Abstract LLM client that all providers implement."""
+
+    def __init__(self, config: LLMConfig) -> None:
         self._config = config
-        self._driver: Driver | None = None
-
-    # --- Connection Management ---
-
-    def connect(self) -> None:
-        """Open the connection pool."""
-        if self._driver is not None:
-            return
-        self._driver = GraphDatabase.driver(
-            self._config.neo4j.uri,
-            auth=(self._config.neo4j.user, self._config.neo4j.password),
-            max_connection_pool_size=self._config.neo4j.max_connection_pool_size,
-            connection_timeout=self._config.neo4j.connection_timeout,
-        )
-        # Verify connectivity
-        self._driver.verify_connectivity()
-
-    def close(self) -> None:
-        """Close the connection pool."""
-        if self._driver is not None:
-            self._driver.close()
-            self._driver = None
-
-    def __enter__(self) -> Neo4jClient:
-        self.connect()
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        self.close()
 
     @property
-    def driver(self) -> Driver:
-        if self._driver is None:
-            raise RuntimeError("Not connected. Call connect() or use context manager.")
-        return self._driver
+    def config(self) -> LLMConfig:
+        return self._config
 
-    # --- Schema Initialization ---
+    # ── Core methods ────────────────────────────────────────────────
 
-    def initialize_schema(self) -> None:
-        """Create constraints, indexes, and vector index."""
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            # Unique constraint on Resource.id
-            session.run(
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (r:Resource) REQUIRE r.id IS UNIQUE"
-            )
-            # Index on Resource.type for filtering
-            session.run(
-                "CREATE INDEX IF NOT EXISTS FOR (r:Resource) ON (r.type)"
-            )
-            # Index on Resource.label for text search
-            session.run(
-                "CREATE INDEX IF NOT EXISTS FOR (r:Resource) ON (r.label)"
-            )
-            # Checkpoint constraint
-            session.run(
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (c:PipelineCheckpoint) REQUIRE c.pipeline_name IS UNIQUE"
-            )
-            # Vector index — dimension from config
-            dimension = self._config.embedding.dimension
-            # Drop existing first if dimension changed (safe for init)
-            try:
-                session.run("DROP INDEX resource_embedding IF EXISTS")
-            except Exception:
-                pass
-            session.run(
-                f"CREATE VECTOR INDEX resource_embedding IF NOT EXISTS "
-                f"FOR (r:Resource) ON (r.embedding) "
-                f"OPTIONS {{indexConfig: {{`vector.dimensions`: {dimension}, "
-                f"`vector.similarity_function`: 'cosine'}}}}"
-            )
-
-    def drop_schema(self) -> None:
-        """Remove all constraints and indexes (for reset)."""
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            # Drop all constraints
-            result = session.run("SHOW CONSTRAINTS")
-            for record in result:
-                name = record.get("name")
-                if name:
-                    session.run(f"DROP CONSTRAINT {name} IF EXISTS")
-            # Drop all indexes
-            result = session.run("SHOW INDEXES")
-            for record in result:
-                name = record.get("name")
-                if name:
-                    session.run(f"DROP INDEX {name} IF EXISTS")
-
-    def health_check(self) -> bool:
-        """Check if the server is reachable and schema is initialized."""
-        try:
-            self.driver.verify_connectivity()
-            return True
-        except Exception:
-            return False
-
-    # --- Resource CRUD ---
-
-    def upsert_resource(self, resource: Resource) -> None:
-        """MERGE a Resource node by id. Creates or updates."""
-        query = """
-        MERGE (r:Resource {id: $id})
-        ON CREATE SET
-            r.type = $type,
-            r.label = $label,
-            r.properties = $properties,
-            r.ingested_at = $ingested_at
-        ON MATCH SET
-            r.type = $type,
-            r.label = $label,
-            r.properties = $properties
-        """
-        params = {
-            "id": resource.id,
-            "type": resource.type,
-            "label": resource.label,
-            "properties": resource.properties or {},
-            "ingested_at": (resource.ingested_at or datetime.now(timezone.utc)).isoformat(),
-        }
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            session.run(query, params)
-            # Set embedding separately (vector index field)
-            if resource.embedding is not None:
-                session.run(
-                    "MATCH (r:Resource {id: $id}) SET r.embedding = $embedding",
-                    {"id": resource.id, "embedding": resource.embedding},
-                )
-
-    def upsert_resources_batch(self, resources: list[Resource]) -> None:
-        """Upsert multiple resources in a single transaction for performance."""
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            for resource in resources:
-                session.run(
-                    """
-                    MERGE (r:Resource {id: $id})
-                    ON CREATE SET
-                        r.type = $type, r.label = $label,
-                        r.properties = $properties, r.ingested_at = $ingested_at
-                    ON MATCH SET
-                        r.type = $type, r.label = $label, r.properties = $properties
-                    """,
-                    {
-                        "id": resource.id,
-                        "type": resource.type,
-                        "label": resource.label,
-                        "properties": resource.properties or {},
-                        "ingested_at": (resource.ingested_at or datetime.now(timezone.utc)).isoformat(),
-                    },
-                )
-                if resource.embedding is not None:
-                    session.run(
-                        "MATCH (r:Resource {id: $id}) SET r.embedding = $embedding",
-                        {"id": resource.id, "embedding": resource.embedding},
-                    )
-
-    def get_resource(self, resource_id: str) -> Resource | None:
-        """Fetch a single Resource by id."""
-        query = "MATCH (r:Resource {id: $id}) RETURN r"
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            result = session.run(query, {"id": resource_id})
-            record = result.single()
-            if record is None:
-                return None
-            node = record["r"]
-            return Resource(
-                id=node.get("id", resource_id),
-                type=node.get("type", "unknown"),
-                label=node.get("label", ""),
-                properties=dict(node.get("properties", {}) or {}),
-                embedding=node.get("embedding"),
-            )
-
-    # --- Relationship CRUD ---
-
-    def upsert_relationship(self, rel: Relationship) -> None:
-        """MERGE a RELATES relationship between two Resources."""
-        query = """
-        MATCH (a:Resource {id: $source_id})
-        MATCH (b:Resource {id: $target_id})
-        MERGE (a)-[r:RELATES {type: $rel_type}]->(b)
-        ON CREATE SET r += $properties
-        ON MATCH SET r += $properties
-        """
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            session.run(query, {
-                "source_id": rel.source_id,
-                "target_id": rel.target_id,
-                "rel_type": rel.type,
-                "properties": rel.properties,
-            })
-
-    def upsert_relationships_batch(self, relationships: list[Relationship]) -> None:
-        """Upsert multiple relationships in a single transaction."""
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            for rel in relationships:
-                session.run(
-                    """
-                    MATCH (a:Resource {id: $source_id})
-                    MATCH (b:Resource {id: $target_id})
-                    MERGE (a)-[r:RELATES {type: $rel_type}]->(b)
-                    ON CREATE SET r += $properties
-                    ON MATCH SET r += $properties
-                    """,
-                    {
-                        "source_id": rel.source_id,
-                        "target_id": rel.target_id,
-                        "rel_type": rel.type,
-                        "properties": rel.properties,
-                    },
-                )
-
-    # --- Query Operations ---
-
-    def vector_search(
+    @abstractmethod
+    def chat(
         self,
-        query_embedding: list[float],
-        top_k: int = 10,
-        type_filter: str | None = None,
-    ) -> QueryResult:
-        """Semantic search via vector index. Returns top-k similar Resources."""
-        cypher = "CALL db.index.vector.queryNodes('resource_embedding', $top_k, $query_embedding)"
-        params: dict[str, Any] = {"top_k": top_k, "query_embedding": query_embedding}
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Send a chat completion request and return the text response."""
+        ...
 
-        if type_filter:
-            cypher += " YIELD node, score WHERE node.type = $type_filter"
-        else:
-            cypher += " YIELD node, score"
-        cypher += " RETURN node, score ORDER BY score DESC"
-
-        params["type_filter"] = type_filter if type_filter else None
-
-        t0 = time.monotonic()
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            result = session.run(cypher, params)
-            resources: list[Resource] = []
-            scores: list[float] = []
-            for record in result:
-                node = record["node"]
-                resources.append(Resource(
-                    id=node.get("id", ""),
-                    type=node.get("type", "unknown"),
-                    label=node.get("label", ""),
-                    properties=dict(node.get("properties", {}) or {}),
-                ))
-                scores.append(record["score"])
-
-        elapsed = (time.monotonic() - t0) * 1000
-        return QueryResult(nodes=resources, scores=scores, execution_time_ms=elapsed)
-
-    def traverse(
+    def extract_structured(
         self,
-        start_id: str,
-        hops: int = 1,
-        rel_types: list[str] | None = None,
-        direction: str = "both",
-    ) -> QueryResult:
-        """Graph traversal from a starting node. Returns all nodes and relationships within N hops."""
-        dir_symbol = {"outgoing": "->", "incoming": "<-", "both": "-"}.get(direction, "-")
-        rel_pattern = f"[r:RELATES{dir_symbol}]"
-        if rel_types:
-            type_filter = "|".join(rel_types)
-            rel_pattern = f"[r:RELATES {dir_symbol}[r.type IN $rel_types]]"
+        messages: list[dict[str, str]],
+        schema: type[BaseModel],
+        model: str | None = None,
+        system_prompt: str | None = None,
+    ) -> BaseModel:
+        """Extract structured data matching a Pydantic schema.
 
-        cypher = f"""
-        MATCH path = (start:Resource {{id: $start_id}})-{rel_pattern}*(1..{hops})-(end:Resource)
-        RETURN nodes(path) AS nodes, relationships(path) AS rels
+        Uses response_format={'type': 'json_object'} for reliable JSON output,
+        then validates against the provided Pydantic model.
+        Falls back to JSON parsing + validation if JSON mode is unavailable.
         """
+        ...
 
-        t0 = time.monotonic()
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            result = session.run(cypher, {
-                "start_id": start_id,
-                "rel_types": rel_types or [],
-            })
-            seen_nodes: dict[str, Resource] = {}
-            seen_rels: list[Relationship] = []
-            for record in result:
-                for node in record["nodes"]:
-                    nid = node.get("id", "")
-                    if nid not in seen_nodes:
-                        seen_nodes[nid] = Resource(
-                            id=nid,
-                            type=node.get("type", "unknown"),
-                            label=node.get("label", ""),
-                            properties=dict(node.get("properties", {}) or {}),
-                        )
-                for rel in record["rels"]:
-                    seen_rels.append(Relationship(
-                        source_id=rel.get("source_id", ""),
-                        target_id=rel.get("target_id", ""),
-                        type=rel.type,
-                        properties=dict(rel.get("properties", {}) or {}),
-                    ))
+    def generate(
+        self,
+        prompt: str,
+        model: str | None = None,
+        temperature: float = 0.7,
+        system_prompt: str | None = None,
+    ) -> str:
+        """Simple text generation from a string prompt."""
+        ...
 
-        elapsed = (time.monotonic() - t0) * 1000
-        return QueryResult(
-            nodes=list(seen_nodes.values()),
-            relationships=seen_rels,
-            execution_time_ms=elapsed,
+    # ── Lifecycle ───────────────────────────────────────────────────
+
+    async def aclose(self) -> None:
+        """Release any resources. Override in providers with async clients."""
+        pass
+
+
+# ── OpenRouter Provider ─────────────────────────────────────────────
+
+class OpenRouterProvider(LLMClient):
+    """OpenRouter-backed LLM client using OpenAI-compatible REST API."""
+
+    def __init__(self, config: LLMConfig) -> None:
+        super().__init__(config)
+        if not config.api_key:
+            logger.warning("No LLM API key configured — set KG_LLM_API_KEY or llm.api_key in config")
+        self._client = httpx.Client(
+            base_url=config.base_url.rstrip("/") + "/",
+            headers={
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=config.timeout,
+        )
+        self._async_client = httpx.AsyncClient(
+            base_url=config.base_url.rstrip("/") + "/",
+            headers={
+                "Authorization": f"Bearer {config.api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=config.timeout,
         )
 
-    def hybrid_search(
+    def _get_model(self, model: str | None, task: str = "default") -> str:
+        """Resolve a model name with config fallback."""
+        if model:
+            return model
+        return {
+            "default": self._config.default_model,
+            "extraction": self._config.extraction_model,
+            "query": self._config.query_model,
+        }.get(task, self._config.default_model)
+
+    def _request(
         self,
-        query_embedding: list[float],
-        cypher_filter: str = "",
-        top_k: int = 10,
-    ) -> QueryResult:
-        """Vector search scoped by an optional Cypher pre-filter."""
-        cypher = """
-        CALL db.index.vector.queryNodes('resource_embedding', $top_k * 3, $query_embedding)
-        YIELD node, score
-        """
-        if cypher_filter:
-            cypher += f" WHERE {cypher_filter}"
-        cypher += """
-        WITH node, score ORDER BY score DESC LIMIT $top_k
-        RETURN node, score
-        """
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        response_format: dict[str, str] | None = None,
+    ) -> httpx.Response:
+        """Send a chat completion request with retry logic."""
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+        }
+        if max_tokens:
+            body["max_tokens"] = max_tokens
+        if response_format:
+            body["response_format"] = response_format
 
-        t0 = time.monotonic()
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            result = session.run(cypher, {
-                "query_embedding": query_embedding,
-                "top_k": top_k,
-            })
-            resources = []
-            scores = []
-            for record in result:
-                node = record["node"]
-                resources.append(Resource(
-                    id=node.get("id", ""),
-                    type=node.get("type", "unknown"),
-                    label=node.get("label", ""),
-                    properties=dict(node.get("properties", {}) or {}),
-                ))
-                scores.append(record["score"])
+        last_error: Exception | None = None
+        max_retries = self._config.max_retries
 
-        elapsed = (time.monotonic() - t0) * 1000
-        return QueryResult(nodes=resources, scores=scores, execution_time_ms=elapsed)
+        for attempt in range(max_retries + 1):
+            try:
+                response = self._client.post("chat/completions", json=body)
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 2 ** attempt))
+                    logger.warning(f"Rate limited, retrying in {retry_after}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(retry_after)
+                    continue
+                if response.status_code == 401:
+                    raise LLMAuthenticationError("Invalid API key. Set KG_LLM_API_KEY in your environment.")
+                if response.status_code == 402:
+                    raise LLMError("Insufficient credits/balance. Top up your OpenRouter account.")
+                response.raise_for_status()
+                return response
 
-    def run_cypher(self, cypher: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        """Execute raw Cypher and return results as dicts."""
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            result = session.run(cypher, params or {})
-            return [dict(record) for record in result]
+            except httpx.TimeoutException as e:
+                if attempt < max_retries:
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(f"Timeout, retrying in {delay}s (attempt {attempt + 1}/{max_retries})")
+                    time.sleep(delay)
+                else:
+                    raise LLMTimeoutError(f"Request timed out after {max_retries + 1} attempts") from e
+            except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                if attempt < max_retries:
+                    delay = 2 ** (attempt + 1)
+                    logger.warning(f"HTTP error, retrying in {delay}s (attempt {attempt + 1}/{max_retries}): {e}")
+                    time.sleep(delay)
+                else:
+                    raise LLMError(f"Request failed after {max_retries + 1} attempts: {e}") from e
 
-    # --- Stats ---
+        raise LLMError("Request failed (exhausted retries)")
 
-    def get_stats(self) -> GraphStats:
-        """Get node count, relationship count, vector index health, and checkpoints."""
-        stats = GraphStats()
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            # Node count
-            result = session.run("MATCH (r:Resource) RETURN count(r) AS count")
-            stats.node_count = result.single()["count"]
+    # ── Public API ──────────────────────────────────────────────────
 
-            # Relationship count
-            result = session.run("MATCH ()-[r:RELATES]->() RETURN count(r) AS count")
-            stats.relationship_count = result.single()["count"]
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        model: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+    ) -> str:
+        model = self._get_model(model)
+        response = self._request(messages, model=model, temperature=temperature, max_tokens=max_tokens)
+        try:
+            data = response.json()
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
+            if content is None:
+                raise LLMInvalidResponseError("LLM returned empty content (possible content filter)")
+            # Log token usage
+            usage = data.get("usage", {})
+            if usage:
+                logger.debug(f"LLM tokens: {usage.get('prompt_tokens', '?')} in, {usage.get('completion_tokens', '?')} out")
+            return content.strip()
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            raise LLMInvalidResponseError(f"Unexpected API response format: {e}")
 
-            # Vector index health
-            result = session.run("SHOW INDEXES WHERE name = 'resource_embedding'")
-            for record in result:
-                stats.vector_index_ready = record.get("state") == "online"
+    def extract_structured(
+        self,
+        messages: list[dict[str, str]],
+        schema: type[BaseModel],
+        model: str | None = None,
+        system_prompt: str | None = None,
+    ) -> BaseModel:
+        model = self._get_model(model, task="extraction")
+        system_prompt = system_prompt or "You are a structured data extraction assistant. Always respond with valid JSON."
+        messages = _ensure_system_prompt(messages, system_prompt)
 
-            # Checkpoints
-            result = session.run("MATCH (c:PipelineCheckpoint) RETURN c")
-            for record in result:
-                node = record["c"]
-                cp = PipelineCheckpoint(
-                    pipeline_name=node.get("pipeline_name", ""),
-                    last_processed_id=node.get("last_processed_id", ""),
-                    total_processed=node.get("total_processed", 0),
-                )
-                stats.last_checkpoints[cp.pipeline_name] = cp
+        response = self._request(
+            messages,
+            model=model,
+            temperature=0.1,  # Low temp for reliable extraction
+            response_format={"type": "json_object"},
+        )
 
-        return stats
+        try:
+            data = response.json()
+            raw_text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, json.JSONDecodeError) as e:
+            raise LLMInvalidResponseError(f"Unexpected API response format: {e}")
 
-    # --- Checkpoints ---
+        # Parse and validate against schema
+        try:
+            parsed = _parse_json_response(raw_text)
+        except json.JSONDecodeError as e:
+            raise LLMInvalidResponseError(f"LLM returned invalid JSON: {e}\nRaw: {raw_text[:500]}")
 
-    def get_checkpoint(self, pipeline_name: str) -> PipelineCheckpoint | None:
-        """Get the checkpoint for a pipeline."""
-        query = "MATCH (c:PipelineCheckpoint {pipeline_name: $name}) RETURN c"
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            result = session.run(query, {"name": pipeline_name})
-            record = result.single()
-            if record is None:
-                return None
-            node = record["c"]
-            return PipelineCheckpoint(
-                pipeline_name=node.get("pipeline_name", pipeline_name),
-                last_processed_id=node.get("last_processed_id", ""),
-                total_processed=node.get("total_processed", 0),
-                updated_at=node.get("updated_at"),
+        try:
+            if isinstance(parsed, list):
+                # Handle list responses — wrap in schema validation per item
+                if hasattr(schema, "model_validate"):
+                    return [schema.model_validate(item) for item in parsed]
+            return schema.model_validate(parsed)
+        except ValidationError as e:
+            raise LLMInvalidResponseError(f"LLM output failed schema validation: {e}\nParsed: {json.dumps(parsed, indent=2)[:500]}")
+
+    def generate(
+        self,
+        prompt: str,
+        model: str | None = None,
+        temperature: float = 0.7,
+        system_prompt: str | None = None,
+    ) -> str:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        return self.chat(messages, model=model, temperature=temperature)
+
+
+# ── Factory ─────────────────────────────────────────────────────────
+
+class LLMProviderFactory:
+    """Creates the right LLM provider based on config."""
+
+    _providers: dict[str, type[LLMClient]] = {
+        "openrouter": OpenRouterProvider,
+    }
+
+    @classmethod
+    def register(cls, name: str, provider_cls: type[LLMClient]) -> None:
+        """Register a custom provider."""
+        cls._providers[name] = provider_cls
+
+    @classmethod
+    def create(cls, config: KGConfig) -> LLMClient:
+        """Create an LLM client from the root config."""
+        provider_name = config.llm.provider
+        if provider_name not in cls._providers:
+            raise ValueError(
+                f"Unknown LLM provider: {provider_name}. "
+                f"Available: {', '.join(cls._providers)}"
             )
-
-    def save_checkpoint(self, checkpoint: PipelineCheckpoint) -> None:
-        """Upsert a pipeline checkpoint."""
-        query = """
-        MERGE (c:PipelineCheckpoint {pipeline_name: $name})
-        SET c.last_processed_id = $last_id,
-            c.total_processed = $total,
-            c.updated_at = $updated_at
-        """
-        with self.driver.session(database=self._config.neo4j.database) as session:
-            session.run(query, {
-                "name": checkpoint.pipeline_name,
-                "last_id": checkpoint.last_processed_id,
-                "total": checkpoint.total_processed,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            })
+        return cls._providers[provider_name](config.llm)
 ```
 
-### 3. Update cli/init.py
-
-After loading config, call `client.initialize_schema()`:
+### cli/llm.py
 
 ```python
-def run_init(reset: bool = False) -> None:
-    """Initialize config and Neo4j schema."""
-    cfg = load_config(auto_create=True)
-    
-    if reset:
-        console.print("[yellow]Reset requested — dropping existing schema...[/]")
-    
-    # Initialize Neo4j
-    from core.graph import Neo4jClient
-    with Neo4jClient(cfg) as client:
-        if reset:
-            client.drop_schema()
-        client.initialize_schema()
-        stats = client.get_stats()
-    
-    console.print(Panel.fit(
-        f"[bold green]✓[/] Config loaded\n"
-        f"  [bold green]✓[/] Neo4j schema initialized\n"
-        f"  Nodes: {stats.node_count}, Relationships: {stats.relationship_count}\n"
-        f"  Vector index: {'[green]ready[/]' if stats.vector_index_ready else '[yellow]pending[/]'}",
-        title="agent-knowledge-graph",
-    ))
+"""LLM-related CLI commands for testing and debugging."""
+
+from __future__ import annotations
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+
+from core.config import load_config
+from core.llm import LLMProviderFactory
+
+app = typer.Typer(help="LLM provider commands")
+console = Console()
+
+
+@app.command()
+def ping() -> None:
+    """Test LLM connectivity with a simple chat completion."""
+    cfg = load_config(auto_create=False)
+    try:
+        client = LLMProviderFactory.create(cfg)
+        response = client.generate(
+            "Respond with exactly: OK. Say nothing else.",
+            temperature=0.1,
+        )
+        console.print(Panel(f"[green]{response.strip()}[/]", title="LLM Ping"))
+    except Exception as e:
+        console.print(f"[red]LLM ping failed: {e}[/]")
+        raise typer.Exit(1)
+
+
+@app.command()
+def extract() -> None:
+    """Test structured extraction with a simple schema."""
+    from pydantic import BaseModel, Field
+
+    class TestExtract(BaseModel):
+        name: str = Field(..., description="The person's name")
+        role: str = Field(..., description="Their role or title")
+        confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    cfg = load_config(auto_create=False)
+    try:
+        client = LLMProviderFactory.create(cfg)
+        result = client.extract_structured(
+            messages=[
+                {"role": "user", "content": "Vik is the architect behind agent-knowledge-graph."
+                 " He works on AI and cloud architecture."}
+            ],
+            schema=TestExtract,
+        )
+        console.print(Panel(f"[green]{result.model_dump_json(indent=2)}[/]", title="Structured Extraction"))
+    except Exception as e:
+        console.print(f"[red]Extraction failed: {e}[/]")
+        raise typer.Exit(1)
 ```
 
-### 4. Update core/__init__.py
+### Wire into main app
+
+In `cli/main.py`, add the LLM subcommand group:
+
+```python
+from cli.llm import app as llm_app
+
+app.add_typer(llm_app, name="llm", help="LLM provider commands (ping, extract)")
+```
+
+### Update core/__init__.py
 
 ```python
 from core.config import EmbeddingConfig, KGConfig, LLMConfig, Neo4jConfig, load_config
 from core.graph import Neo4jClient
+from core.llm import LLMClient, LLMProviderFactory, OpenRouterProvider
 from core.models import GraphStats, PipelineCheckpoint, QueryResult, Resource, Relationship
 
 __all__ = [
     "KGConfig", "LLMConfig", "EmbeddingConfig", "Neo4jConfig", "load_config",
     "Neo4jClient",
+    "LLMClient", "OpenRouterProvider", "LLMProviderFactory",
     "Resource", "Relationship", "GraphStats", "PipelineCheckpoint", "QueryResult",
 ]
 ```
 
-### 5. Tests (tests/test_graph.py)
-
-Create a new test file. Since we can't guarantee a local Neo4j instance, the tests should use mocking extensively but also document the integration test pattern.
+### Tests (tests/test_llm.py) — mocked, no real API calls
 
 ```python
-"""Tests for the Neo4j storage layer."""
+"""Tests for the LLM abstraction layer."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
+from pydantic import BaseModel, Field
 
-from core.graph import Neo4jClient
-from core.models import GraphStats, PipelineCheckpoint, Resource, Relationship
+from core.llm import (
+    LLMClient,
+    LLMAuthenticationError,
+    LLMError,
+    LLMInvalidResponseError,
+    LLMProviderFactory,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    OpenRouterProvider,
+    _parse_json_response,
+)
 
+
+# ── Test JSON parser ────────────────────────────────────────────────
+
+class TestParseJsonResponse:
+    def test_plain_json(self):
+        assert _parse_json_response('{"key": "value"}') == {"key": "value"}
+
+    def test_markdown_fenced_json(self):
+        result = _parse_json_response('```json\n{"key": "value"}\n```')
+        assert result == {"key": "value"}
+
+    def test_list_json(self):
+        assert _parse_json_response('[1, 2, 3]') == [1, 2, 3]
+
+    def test_invalid_json(self):
+        with pytest.raises(json.JSONDecodeError):
+            _parse_json_response("{invalid}")
+
+
+# ── Test OpenRouter Provider (mocked) ───────────────────────────────
 
 @pytest.fixture
 def mock_config():
-    """Return a KGConfig with test values."""
-    from core.config import KGConfig
-    return KGConfig()
+    from core.config import LLMConfig
+    return LLMConfig(api_key="test-key", base_url="https://test.openrouter.ai/api/v1")
 
 
 @pytest.fixture
-def client(mock_config):
-    """Return a Neo4jClient with the driver mock-autowired."""
-    c = Neo4jClient(mock_config)
-    c._driver = MagicMock()
-    return c
+def provider(mock_config):
+    with patch("httpx.Client") as mock_client_cls:
+        mock_client = MagicMock()
+        mock_client_cls.return_value = mock_client
+        provider = OpenRouterProvider(mock_config)
+        provider._client = mock_client
+        yield provider
 
 
-class TestConnection:
-    def test_connect_calls_verify(self, client):
-        client._driver = None
-        with patch("neo4j.GraphDatabase.driver") as mock_driver:
-            mock_instance = MagicMock()
-            mock_driver.return_value = mock_instance
-            client.connect()
-            mock_instance.verify_connectivity.assert_called_once()
+class TestOpenRouterProvider:
+    def test_init_stores_config(self, mock_config):
+        with patch("httpx.Client"):
+            provider = OpenRouterProvider(mock_config)
+            assert provider.config == mock_config
 
-    def test_close_clears_driver(self, client):
-        client.close()
-        assert client._driver is None
+    def test_init_warns_no_key(self, mock_config, caplog):
+        mock_config.api_key = ""
+        with patch("httpx.Client"):
+            with caplog.at_level("WARNING"):
+                OpenRouterProvider(mock_config)
+                assert "No LLM API key" in caplog.text
 
-    def test_context_manager(self, mock_config):
-        with patch("neo4j.GraphDatabase.driver") as mock_driver:
-            with Neo4jClient(mock_config) as c:
-                assert c._driver is not None
-            assert c._driver is None
-
-    def test_health_check_ok(self, client):
-        client._driver.verify_connectivity.return_value = True
-        assert client.health_check() is True
-
-    def test_health_check_fail(self, client):
-        client._driver.verify_connectivity.side_effect = Exception("Connection refused")
-        assert client.health_check() is False
-
-
-class TestSchema:
-    def test_initialize_schema_runs_cypher(self, client):
-        client.initialize_schema()
-        # Should have called session.run multiple times for constraints, indexes, vector index
-        calls = client._driver.session.return_value.__enter__.return_value.run.call_args_list
-        assert len(calls) >= 4  # constraint + 2 indexes + vector index
-
-    def test_drop_schema(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value = []  # SHOW CONSTRAINTS returns nothing
-        client.drop_schema()
-        # Should have called SHOW CONSTRAINTS
-        assert any("SHOW CONSTRAINTS" in str(c) for c in mock_session.run.call_args_list)
-
-
-class TestResourceCRUD:
-    def test_upsert_resource(self, client):
-        resource = Resource(
-            id="test-1", type="session", label="Test Session",
-            properties={"key": "value"}, embedding=[0.1, 0.2, 0.3],
-        )
-        client.upsert_resource(resource)
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        assert mock_session.run.call_count >= 2  # MERGE + SET embedding
-
-    def test_batch_upsert(self, client):
-        resources = [
-            Resource(id=f"r{i}", type="entity", label=f"Entity {i}",
-                     properties={"idx": i}, embedding=[float(i)])
-            for i in range(3)
-        ]
-        client.upsert_resources_batch(resources)
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        # Each resource should fire 1 MERGE + 1 SET
-        assert mock_session.run.call_count == 6
-
-    def test_get_resource_found(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value.single.return_value = {
-            "r": {
-                "id": "test-1", "type": "session", "label": "Found",
-                "properties": {"k": "v"}, "embedding": [0.1],
-            }
+    def test_chat_basic(self, provider):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Hello!"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
         }
-        resource = client.get_resource("test-1")
-        assert resource is not None
-        assert resource.id == "test-1"
-        assert resource.label == "Found"
+        provider._client.post.return_value = mock_response
 
-    def test_get_resource_not_found(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value.single.return_value = None
-        assert client.get_resource("nonexistent") is None
+        result = provider.chat([{"role": "user", "content": "Say hello"}])
+        assert result == "Hello!"
 
-
-class TestRelationshipCRUD:
-    def test_upsert_relationship(self, client):
-        rel = Relationship(source_id="a", target_id="b", type="references",
-                           properties={"weight": 0.8})
-        client.upsert_relationship(rel)
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        assert mock_session.run.called
-
-    def test_batch_upsert_relationships(self, client):
-        rels = [
-            Relationship(source_id="a", target_id="b", type="references"),
-            Relationship(source_id="b", target_id="c", type="depends_on"),
-        ]
-        client.upsert_relationships_batch(rels)
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        assert mock_session.run.call_count == 2
-
-
-class TestQuery:
-    def test_vector_search(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value = [
-            {"node": {"id": "r1", "type": "entity", "label": "Test"}, "score": 0.95},
-        ]
-        result = client.vector_search([0.1, 0.2, 0.3], top_k=5)
-        assert len(result.nodes) == 1
-        assert result.nodes[0].id == "r1"
-        assert result.scores == [0.95]
-
-    def test_vector_search_with_type_filter(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value = []
-        result = client.vector_search([0.1, 0.2, 0.3], top_k=5, type_filter="session")
-        # Verify the Cypher includes WHERE node.type
-        call_args = str(mock_session.run.call_args)
-        assert "WHERE" in call_args
-        assert len(result.nodes) == 0
-
-    def test_traverse(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value = [
-            {
-                "nodes": [
-                    {"id": "a", "type": "entity", "label": "A", "properties": {}},
-                    {"id": "b", "type": "entity", "label": "B", "properties": {}},
-                ],
-                "rels": [
-                    {"source_id": "a", "target_id": "b", "type": "RELATES", "properties": {}},
-                ],
-            }
-        ]
-        result = client.traverse("a", hops=1)
-        assert len(result.nodes) == 2
-        assert len(result.relationships) == 1
-
-    def test_hybrid_search(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value = []
-        result = client.hybrid_search([0.1, 0.2], cypher_filter="node.type = 'session'", top_k=5)
-        assert result is not None
-
-
-class TestCheckpoints:
-    def test_get_checkpoint_exists(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value.single.return_value = {
-            "c": {"pipeline_name": "sessions", "last_processed_id": "sess-100",
-                  "total_processed": 50}
+    def test_chat_model_override(self, provider):
+        """Should use the specified model, not the default."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "OK"}}],
         }
-        cp = client.get_checkpoint("sessions")
-        assert cp is not None
-        assert cp.pipeline_name == "sessions"
-        assert cp.last_processed_id == "sess-100"
+        provider._client.post.return_value = mock_response
 
-    def test_get_checkpoint_missing(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value.single.return_value = None
-        assert client.get_checkpoint("nonexistent") is None
+        provider.chat([{"role": "user", "content": "hi"}], model="custom-model")
+        call_body = provider._client.post.call_args[1]["json"]
+        assert call_body["model"] == "custom-model"
 
-    def test_save_checkpoint(self, client):
-        cp = PipelineCheckpoint(
-            pipeline_name="test", last_processed_id="last-1", total_processed=10,
+    def test_extract_structured(self, provider):
+        class Person(BaseModel):
+            name: str = Field(..., description="Name")
+            age: int = Field(..., description="Age")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '{"name": "Alice", "age": 30}'}}],
+        }
+        provider._client.post.return_value = mock_response
+
+        result = provider.extract_structured(
+            [{"role": "user", "content": "Alice is 30"}],
+            schema=Person,
         )
-        client.save_checkpoint(cp)
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        assert mock_session.run.called
+        assert isinstance(result, Person)
+        assert result.name == "Alice"
+        assert result.age == 30
+
+    def test_extract_structured_invalid_json(self, provider):
+        class Person(BaseModel):
+            name: str
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "not json"}}],
+        }
+        provider._client.post.return_value = mock_response
+
+        with pytest.raises(LLMInvalidResponseError):
+            provider.extract_structured([{"role": "user", "content": "test"}], schema=Person)
+
+    def test_extract_structured_schema_validation(self, provider):
+        class Person(BaseModel):
+            name: str
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": '{"age": 30}'}}],
+        }
+        provider._client.post.return_value = mock_response
+
+        with pytest.raises(LLMInvalidResponseError):
+            provider.extract_structured([{"role": "user", "content": "test"}], schema=Person)
+
+    def test_generate(self, provider):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Generated text"}}],
+        }
+        provider._client.post.return_value = mock_response
+
+        result = provider.generate("Write something")
+        assert result == "Generated text"
+
+    def test_rate_limit_retry(self, provider):
+        """Should retry on 429 and eventually succeed."""
+        rate_limit_response = MagicMock()
+        rate_limit_response.status_code = 429
+        rate_limit_response.headers = {}
+
+        success_response = MagicMock()
+        success_response.status_code = 200
+        success_response.json.return_value = {
+            "choices": [{"message": {"content": "Success after retry"}}],
+        }
+
+        provider._client.post.side_effect = [rate_limit_response, success_response]
+
+        with patch("time.sleep") as mock_sleep:
+            result = provider.chat([{"role": "user", "content": "test"}])
+            assert result == "Success after retry"
+            assert mock_sleep.call_count == 1
+
+    def test_authentication_error(self, provider):
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        provider._client.post.return_value = mock_response
+
+        with pytest.raises(LLMAuthenticationError):
+            provider.chat([{"role": "user", "content": "test"}])
+
+    def test_timeout_retry(self, provider):
+        """Should retry on timeout and raise after exhausting retries."""
+        provider._client.post.side_effect = httpx.TimeoutException("timeout")
+
+        with pytest.raises(LLMTimeoutError), patch("time.sleep"):
+            provider.chat([{"role": "user", "content": "test"}])
+
+    def test_empty_content_raises(self, provider):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": None}}],
+        }
+        provider._client.post.return_value = mock_response
+
+        with pytest.raises(LLMInvalidResponseError, match="empty content"):
+            provider.chat([{"role": "user", "content": "test"}])
+
+    def test_generate_with_system_prompt(self, provider):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Response"}}],
+        }
+        provider._client.post.return_value = mock_response
+
+        provider.generate("prompt", system_prompt="You are helpful")
+        call_body = provider._client.post.call_args[1]["json"]
+        assert call_body["messages"][0]["role"] == "system"
+        assert call_body["messages"][0]["content"] == "You are helpful"
 
 
-class TestStats:
-    def test_get_stats(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        # Mock run to return appropriate values for each query
-        def mock_run(cypher, **kwargs):
-            result = MagicMock()
-            if "count(r)" in cypher:
-                if "RELATES" in cypher:
-                    result.single.return_value = {"count": 25}
-                else:
-                    result.single.return_value = {"count": 100}
-            elif "SHOW INDEXES" in cypher:
-                result.__iter__.return_value = [
-                    {"name": "resource_embedding", "state": "online"}
-                ]
-            elif "PipelineCheckpoint" in cypher:
-                result.__iter__.return_value = []
-            return result
+# ── Test Factory ────────────────────────────────────────────────────
 
-        mock_session.run.side_effect = mock_run
-        stats = client.get_stats()
-        assert stats.node_count == 100
-        assert stats.relationship_count == 25
-        assert stats.vector_index_ready is True
+class TestLLMProviderFactory:
+    def test_create_openrouter(self):
+        from core.config import KGConfig
+        cfg = KGConfig()
+        cfg.llm.api_key = "test-key"
+        provider = LLMProviderFactory.create(cfg)
+        assert isinstance(provider, OpenRouterProvider)
 
+    def test_create_unknown_provider(self):
+        from core.config import KGConfig
+        cfg = KGConfig()
+        cfg.llm.provider = "nonexistent"
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            LLMProviderFactory.create(cfg)
 
-class TestRunCypher:
-    def test_run_cypher_raw(self, client):
-        mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value = [
-            {"id": "r1", "name": "test"},
-            {"id": "r2", "name": "test2"},
-        ]
-        result = client.run_cypher("MATCH (r:Resource) RETURN r.id AS id, r.label AS name LIMIT 2")
-        assert len(result) == 2
-        assert result[0]["id"] == "r1"
+    def test_register_custom_provider(self):
+        class FakeProvider(LLMClient):
+            def chat(self, messages, model=None, temperature=0.7, max_tokens=None):
+                return "fake"
+
+            def generate(self, prompt, model=None, temperature=0.7, system_prompt=None):
+                return "fake"
+
+            def extract_structured(self, messages, schema, model=None, system_prompt=None):
+                return schema()
+
+        from core.config import LLMConfig
+        LLMProviderFactory.register("fake", FakeProvider)
+
+        from core.config import KGConfig
+        cfg = KGConfig()
+        cfg.llm.provider = "fake"
+        cfg.llm.api_key = "test"
+        provider = LLMProviderFactory.create(cfg)
+        assert isinstance(provider, FakeProvider)
 ```
 
-### 6. Wire into CLI (cli/main.py)
+## Instructions for Cursor CLI
 
-The `kg status` command should now show graph stats:
-
-```python
-@app.command()
-def status() -> None:
-    """Show knowledge graph stats and health."""
-    from core.graph import Neo4jClient
-    cfg = load_config(auto_create=False)
-    try:
-        with Neo4jClient(cfg) as client:
-            stats = client.get_stats()
-            console = Console()
-            table = Table(title="Knowledge Graph Status")
-            table.add_column("Metric", style="bold")
-            table.add_column("Value")
-            table.add_row("Nodes", str(stats.node_count))
-            table.add_row("Relationships", str(stats.relationship_count))
-            table.add_row("Vector Index", "[green]✓ Ready[/]" if stats.vector_index_ready else "[red]✗ Not found[/]")
-            for name, cp in stats.last_checkpoints.items():
-                table.add_row(f"Checkpoint: {name}", f"{cp.total_processed} items, last: {cp.last_processed_id[:20]}...")
-            console.print(table)
-    except Exception as e:
-        Console().print(f"[red]Cannot connect to Neo4j: {e}[/]")
-```
-
-## Instructions for Cursor
-
-1. Replace `core/graph.py` with the full implementation above
-2. Replace `core/models.py` with all the dataclass models
-3. Update `core/__init__.py` to export new classes
-4. Create `tests/test_graph.py` with the test suite above
-5. Update `cli/init.py` to call `Neo4jClient(cfg).initialize_schema()` after loading config
-6. Update `cli/main.py` `status()` command to show graph stats
-7. Run `uv run pytest tests/test_graph.py -v` and ensure all tests pass
-8. Run `uv run pytest -v` to ensure nothing else broke
-9. Run `uv run python -c "from core.graph import Neo4jClient; print('Import OK')"` to verify imports
+1. Replace `core/llm.py` with the full implementation above
+2. Create `cli/llm.py` with `ping` and `extract` subcommands
+3. Create `tests/test_llm.py` with the complete test suite
+4. Update `cli/main.py` to add the `llm` subcommand group
+5. Update `core/__init__.py` to export new classes
+6. Run `uv run python -m pytest tests/test_llm.py -v` and report results
+7. Run `uv run python -c "from core.llm import LLMClient, OpenRouterProvider, LLMProviderFactory; print('Imports OK')"`
