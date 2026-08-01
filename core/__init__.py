@@ -12,6 +12,7 @@ from core.embedding import (
 from core.graph import Neo4jClient
 from core.llm import LLMClient, LLMProviderFactory, OpenRouterProvider
 from core.models import GraphStats, PipelineCheckpoint, QueryResult, Relationship, Resource
+from core.query import NLQueryResult, QueryEngine
 
 __all__ = [
     "KGConfig",
@@ -32,4 +33,6 @@ __all__ = [
     "GraphStats",
     "PipelineCheckpoint",
     "QueryResult",
+    "QueryEngine",
+    "NLQueryResult",
 ]
