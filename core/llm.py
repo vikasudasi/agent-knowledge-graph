@@ -55,13 +55,35 @@ def _count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
 
 
 def _parse_json_response(text: str) -> dict[str, Any] | list[Any]:
-    """Parse JSON from response text. Handles markdown code fences."""
+    """Parse JSON from response text. Handles markdown code fences and double-wrapped JSON."""
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
         if text.startswith("json"):
             text = text[4:].strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Handle double-wrapped JSON: {{...}} — strip one layer
+        stripped = text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            # Try extracting the inner content
+            inner = stripped[1:-1].strip()
+            if inner.startswith("{"):
+                try:
+                    return json.loads(inner)
+                except json.JSONDecodeError:
+                    pass
+            # Some LLMs wrap in {"response": {...}} or {"content": {...}}
+            try:
+                outer = json.loads(stripped)
+                for key in ("response", "content", "result", "data", "output"):
+                    val = outer.get(key)
+                    if val and isinstance(val, (dict, list)):
+                        return val
+            except json.JSONDecodeError:
+                pass
+        raise  # re-raise original error if nothing worked
 
 
 class LLMClient(ABC):
