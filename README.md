@@ -1,5 +1,212 @@
 # agent-knowledge-graph
 
+[![CI](https://img.shields.io/github/actions/workflow/status/vikasudasi/agent-knowledge-graph/test.yml?branch=main&label=CI)](https://github.com/vikasudasi/agent-knowledge-graph/actions)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
+[![Coverage](https://img.shields.io/badge/coverage-pytest--cov-informational)](https://github.com/vikasudasi/agent-knowledge-graph/actions)
+
+## 1) Overview
+
+`agent-knowledge-graph` is a local-first memory system for AI agents. It ingests session artifacts into a Neo4j-backed property graph, augments nodes with embeddings for semantic recall, and supports natural-language query flows that translate user intent to Cypher.
+
+## 2) Features
+
+- Property graph storage in Neo4j with typed `Resource` nodes and relationships
+- NL to Cypher querying via pluggable LLM provider abstractions
+- Semantic and hybrid retrieval via configurable embedding providers
+- Pluggable extract/resolve/embed/write ingestion pipelines
+- Agent adapters for Hermes plugins, MCP, and LangChain tools
+
+## 3) Architecture
+
+The core runtime wires config, providers, and ingestion/query layers around a single graph substrate:
+
+```mermaid
+flowchart LR
+    C[Config\ncore.config] --> P[Pipeline Framework\nExtract -> Resolve -> Embed -> Write]
+    L[LLM Provider] --> P
+    E[Embedding Provider] --> P
+    P --> N[(Neo4j)]
+    Q[Query Engine\nsemantic/traverse/NL->Cypher] --> N
+    Q --> L
+    Q --> E
+```
+
+## 4) Quick Start
+
+```bash
+pip install agent-knowledge-graph
+kg init --with-docker
+docker compose up -d
+kg build run all
+kg query ask "what do I know about deployment regressions?"
+```
+
+If you are developing from source:
+
+```bash
+git clone https://github.com/vikasudasi/agent-knowledge-graph.git
+cd agent-knowledge-graph
+uv sync
+uv run kg --help
+```
+
+## 5) Configuration
+
+The project follows XDG configuration conventions and reads `KG_*` environment overrides.
+
+- Default config: `~/.config/agent-knowledge-graph/config.yaml`
+- Legacy fallback: `~/.agent-knowledge-graph.yaml`
+
+| Key | Env Var | Purpose |
+|---|---|---|
+| `llm.provider` | `KG_LLM_PROVIDER` | LLM backend (`openrouter`, `openai`, etc.) |
+| `llm.api_key` | `KG_LLM_API_KEY` | API key for LLM provider |
+| `llm.base_url` | `KG_LLM_BASE_URL` | Provider API base URL |
+| `embedding.provider` | `KG_EMBEDDING_PROVIDER` | Embedding backend |
+| `embedding.dimension` | `KG_EMBEDDING_DIMENSION` | Embedding vector dimension |
+| `neo4j.uri` | `KG_NEO4J_URI` | Neo4j Bolt URI |
+| `neo4j.user` | `KG_NEO4J_USER` | Neo4j user |
+| `neo4j.password` | `KG_NEO4J_PASSWORD` | Neo4j password |
+| `neo4j.database` | `KG_NEO4J_DATABASE` | Neo4j database |
+| `storage.data_dir` | `KG_DATA_DIR` | Local data directory |
+
+## 6) CLI Reference
+
+### `kg init`
+
+- Initialize schema: `kg init`
+- Reset then initialize: `kg init --reset`
+- Auto-start Docker first: `kg init --with-docker`
+
+### `kg build`
+
+- List pipelines: `kg build list-pipelines`
+- Run one pipeline: `kg build run session-ingest`
+- Run all pipelines: `kg build run all --rebuild`
+
+### `kg query`
+
+- Semantic: `kg query semantic "incident summary" --top 5`
+- Traverse: `kg query traverse session:123 --hops 2 --dir both`
+- NL ask: `kg query ask "What decisions mention Neo4j?"`
+- Explain Cypher: `kg query explain "MATCH (n:Resource) RETURN n LIMIT 5"`
+
+### `kg status`
+
+- Full status: `kg status status`
+- Health check: `kg status health`
+
+### `kg visualize`
+
+- Overview tree: `kg visualize tree`
+- Rooted tree: `kg visualize tree session:123 --depth 2 --max 10`
+
+### `kg watch`
+
+- Continuous: `kg watch watch --interval 60`
+- One pass: `kg watch watch --pipeline session-ingest --once`
+
+### `kg llm`
+
+- Connectivity ping: `kg llm ping`
+- Structured extraction smoke test: `kg llm extract`
+
+## 7) Pipelines
+
+Built-in pipeline:
+
+- `session-ingest`: reads Hermes session DB, extracts structured knowledge, embeds resources, and writes nodes plus mention relationships.
+
+Custom pipelines should subclass `KnowledgePipeline` and implement:
+
+1. `extract(context, checkpoint)`
+2. `resolve(context, record)`
+3. optional `get_relationships(context, records, resources)`
+
+See `PIPELINES.md` for the full authoring guide.
+
+## 8) Query Layer
+
+- **Semantic**: vector similarity search over embedded resources
+- **Traverse**: hop-based relationship exploration around a seed node
+- **Hybrid**: vector search with graph-filter constraints
+- **NL to Cypher**: LLM-generated Cypher executed through the graph client
+
+Examples:
+
+```bash
+kg query semantic "retry policy" --top 8
+kg query traverse entity:redis --hops 2
+kg query ask "Which sessions mention rollout failures?"
+kg query explain "MATCH (a)-[r]->(b) RETURN a,r,b LIMIT 10"
+```
+
+## 9) Agent Adapters
+
+- **Hermes Plugin**: direct plugin surface exposing `kg_query`, `kg_semantic_search`, `kg_traverse`, `kg_stats`
+- **MCP Server Handlers**: async handler map for MCP tool registration
+- **LangChain Tools**: optional tool classes when `langchain_core` is installed
+
+See `AGENTS.md` for setup and comparison details.
+
+## 10) Docker
+
+Use bundled compose for local Neo4j:
+
+```bash
+docker compose up -d
+docker compose ps
+kg docker status
+kg docker down
+```
+
+Helpful script: `scripts/run-neo4j.sh`
+
+## 11) Development
+
+```bash
+uv sync --extra dev
+uv run pytest
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy core cli pipelines adapters
+```
+
+For contribution process, see `CONTRIBUTING.md`.
+
+## 12) FAQ
+
+### Is this only for Hermes?
+
+No. The core is agent-agnostic; Hermes is one adapter.
+
+### Can I run without LLM keys?
+
+Yes for graph operations, status, and many CLI flows. LLM-backed commands require a key.
+
+### Is Neo4j required?
+
+Yes in the current architecture. Docker compose is included for local use.
+
+### Can I write my own pipeline?
+
+Yes. Extend `KnowledgePipeline` and register with `PipelineRegistry`.
+
+### Does LangChain have to be installed?
+
+No. LangChain adapter code degrades gracefully when optional dependencies are absent.
+
+## 13) License
+
+This project is licensed under MIT. See `LICENSE`.
+
+## 14) Changelog
+
+Initial release notes are tracked in `CHANGELOG.md`.
+# test
+# agent-knowledge-graph
+
 [![Tests](https://img.shields.io/github/actions/workflow/status/vikasudasi/agent-knowledge-graph/test.yml?branch=main&label=tests)](https://github.com/vikasudasi/agent-knowledge-graph/actions/workflows/test.yml)
 [![Coverage](https://img.shields.io/badge/coverage-pytest--cov-blue)](https://github.com/vikasudasi/agent-knowledge-graph/actions/workflows/test.yml)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
