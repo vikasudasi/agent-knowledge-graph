@@ -95,7 +95,7 @@ def test_query_explain_output(monkeypatch) -> None:
     from cli import query as query_mod
 
     class _Cfg:
-        class llm:
+        class llm:  # noqa: N801 — matches config model field name
             api_key = "test-key"
 
     class _ExplainEngine:
@@ -119,7 +119,7 @@ def test_query_explain_requires_llm(monkeypatch) -> None:
     from cli import query as query_mod
 
     class _Cfg:
-        class llm:
+        class llm:  # noqa: N801 — matches config model field name
             api_key = ""
 
     monkeypatch.setattr(query_mod, "load_config", lambda auto_create=False: _Cfg())

@@ -40,9 +40,7 @@ if HAS_LANGCHAIN:
 
     class KGQueryTool(_QueryEngineMixin, BaseTool):
         name: str = "kg_query"
-        description: str = (
-            "Query the knowledge graph using natural language. Returns results and generated Cypher."
-        )
+        description: str = "Query the knowledge graph using natural language. Returns results and generated Cypher."
 
         def _run(self, question: str) -> str:
             result = self._get_engine().nl_query(question)
@@ -58,7 +56,6 @@ if HAS_LANGCHAIN:
 
         async def _arun(self, question: str) -> str:
             return self._run(question)
-
 
     class KGSemanticSearchTool(_QueryEngineMixin, BaseTool):
         name: str = "kg_semantic_search"
@@ -84,7 +81,6 @@ if HAS_LANGCHAIN:
         async def _arun(self, query: str, top_k: int = 5) -> str:
             return self._run(query, top_k=top_k)
 
-
     class KGTraverseTool(_QueryEngineMixin, BaseTool):
         name: str = "kg_traverse"
         description: str = "Traverse relationships from a node in the knowledge graph."
@@ -93,9 +89,7 @@ if HAS_LANGCHAIN:
             result = self._get_engine().traverse(start_id, hops=hops)
             return json.dumps(
                 {
-                    "nodes": [
-                        {"id": node.id, "type": node.type, "label": node.label} for node in result.nodes
-                    ],
+                    "nodes": [{"id": node.id, "type": node.type, "label": node.label} for node in result.nodes],
                     "relationships": [
                         {"source": rel.source_id, "target": rel.target_id, "type": rel.type}
                         for rel in result.relationships
@@ -106,7 +100,6 @@ if HAS_LANGCHAIN:
 
         async def _arun(self, start_id: str, hops: int = 1) -> str:
             return self._run(start_id, hops=hops)
-
 
     AVAILABLE_TOOLS = [KGQueryTool, KGSemanticSearchTool, KGTraverseTool]
 else:

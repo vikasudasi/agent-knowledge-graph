@@ -20,9 +20,7 @@ class _Stats:
 
 class _FakeTraverseResult:
     def __init__(self) -> None:
-        self.relationships = [
-            type("Rel", (), {"source_id": "root-1", "target_id": "child-1", "type": "mentions"})()
-        ]
+        self.relationships = [type("Rel", (), {"source_id": "root-1", "target_id": "child-1", "type": "mentions"})()]
 
 
 class _FakeGraph:

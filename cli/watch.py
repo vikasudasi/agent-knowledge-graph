@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import typer
 from rich.console import Console
@@ -23,11 +23,7 @@ def _pipeline_map() -> dict:
         fallback = SessionIngestPipeline()
         PipelineRegistry.register(fallback)
         return {fallback.name: fallback}
-    return {
-        item["name"]: pipe
-        for item in entries
-        if (pipe := PipelineRegistry.get(item["name"])) is not None
-    }
+    return {item["name"]: pipe for item in entries if (pipe := PipelineRegistry.get(item["name"])) is not None}
 
 
 @app.command()
@@ -62,7 +58,7 @@ def watch(
     run_count = 0
     while True:
         run_count += 1
-        now = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        now = datetime.now(UTC).strftime("%H:%M:%S")
         console.print(f"\n[bold]=== Run {run_count} — {now} ===[/]")
         context = _build_context(config)
 
@@ -72,9 +68,7 @@ def watch(
                 try:
                     result = pipe.run(context)
                     if result.records_processed > 0:
-                        console.print(
-                            f"  [green]{name}:[/] {result.records_processed} records, {result.errors} errors"
-                        )
+                        console.print(f"  [green]{name}:[/] {result.records_processed} records, {result.errors} errors")
                     else:
                         console.print(f"  [dim]{name}:[/] no new records")
                 except Exception as exc:

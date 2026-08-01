@@ -246,15 +246,18 @@ def test_plugin_engine_raises_without_graph(self, plugin):
     # Just test that the property exists and is accessible
     assert hasattr(plugin, "engine")
 
+
 def test_mcp_handlers_close(self):
     """MCP handlers close should not raise."""
     handlers = create_mcp_handlers()
     handlers["close"]()  # Should not raise
 
+
 def test_langchain_tools_import_graceful():
     """Without langchain, AVAILABLE_TOOLS should be empty list."""
     with patch("adapters.langchain_tool.HAS_LANGCHAIN", False):
         from adapters.langchain_tool import AVAILABLE_TOOLS
+
         assert AVAILABLE_TOOLS == []
 ```
 

@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable, Generator, Generic, TypeVar
+from datetime import UTC, datetime
+from typing import Any, Generic, TypeVar
 
 from core.config import KGConfig
 from core.embedding import EmbeddingProvider, EmbeddingProviderFactory
@@ -102,8 +103,7 @@ class KnowledgePipeline(ABC, Generic[T]):
             checkpoint = context.graph.get_checkpoint(self._name)
             if checkpoint and checkpoint.last_processed_id:
                 logger.info(
-                    f"Resuming from checkpoint: {checkpoint.last_processed_id} "
-                    f"({checkpoint.total_processed} processed)"
+                    f"Resuming from checkpoint: {checkpoint.last_processed_id} ({checkpoint.total_processed} processed)"
                 )
 
         # Phase 1: Extract
@@ -192,7 +192,7 @@ class KnowledgePipeline(ABC, Generic[T]):
                 pipeline_name=self._name,
                 last_processed_id=str(last_id),
                 total_processed=(checkpoint.total_processed if checkpoint else 0) + total,
-                updated_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(UTC),
             )
             context.graph.save_checkpoint(new_checkpoint)
             result.checkpoint = new_checkpoint
@@ -209,7 +209,11 @@ class KnowledgePipeline(ABC, Generic[T]):
     # ── Pipeline lifecycle (override in subclasses) ────────────────
 
     @abstractmethod
-    def extract(self, context: PipelineContext, checkpoint: PipelineCheckpoint | None = None) -> Generator[T, None, None]:
+    def extract(
+        self,
+        context: PipelineContext,
+        checkpoint: PipelineCheckpoint | None = None,
+    ) -> Generator[T, None, None]:
         """Yield raw records from the source.
 
         Each record is a domain-specific object (dict, dataclass, etc.).
@@ -255,10 +259,7 @@ class PipelineRegistry:
 
     @classmethod
     def list_pipelines(cls) -> list[dict[str, str]]:
-        return [
-            {"name": p.name, "description": p.description, "version": p.version}
-            for p in cls._pipelines.values()
-        ]
+        return [{"name": p.name, "description": p.description, "version": p.version} for p in cls._pipelines.values()]
 
     @classmethod
     def create_context(cls, config: KGConfig, dry_run: bool = False, full_rebuild: bool = False) -> PipelineContext:

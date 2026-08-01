@@ -69,8 +69,8 @@ class TestPipelineContext:
 
         with patch("core.embedding.LocalEmbeddingProvider"):
             with patch.object(cfg.llm, "api_key", "test"):
-                with patch("pipelines.base.LLMProviderFactory.create") as mock_llm:
-                    with patch("pipelines.base.EmbeddingProviderFactory.create") as mock_emb:
+                with patch("pipelines.base.LLMProviderFactory.create") as _:
+                    with patch("pipelines.base.EmbeddingProviderFactory.create") as _:
                         with patch("pipelines.base.Neo4jClient") as mock_graph:
                             mock_graph.return_value = MagicMock()
                             ctx = PipelineRegistry.create_context(cfg)

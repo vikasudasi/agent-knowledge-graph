@@ -11,7 +11,6 @@ from core.graph import Neo4jClient
 from core.llm import LLMClient
 from core.models import QueryResult as KGQueryResult
 
-
 NL_CYPHER_SYSTEM_PROMPT = """You are a Neo4j Cypher query generator for a knowledge graph.
 
 SCHEMA:

@@ -88,8 +88,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             raise EmbeddingError(
-                "sentence-transformers not installed. "
-                "Install with: pip install sentence-transformers"
+                "sentence-transformers not installed. Install with: pip install sentence-transformers"
             ) from exc
 
         self._device = self._detect_device()
@@ -182,8 +181,5 @@ class EmbeddingProviderFactory:
         """Create an embedding provider from root config."""
         provider_name = config.embedding.provider
         if provider_name not in cls._providers:
-            raise ValueError(
-                f"Unknown embedding provider: {provider_name}. "
-                f"Available: {', '.join(cls._providers)}"
-            )
+            raise ValueError(f"Unknown embedding provider: {provider_name}. Available: {', '.join(cls._providers)}")
         return cls._providers[provider_name](config.embedding)

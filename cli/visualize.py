@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import typer
 from rich.console import Console
 from rich.tree import Tree
@@ -17,7 +15,7 @@ console = Console()
 
 @app.command()
 def tree(
-    root_id: Optional[str] = typer.Argument(None, help="Root node ID to start from"),
+    root_id: str | None = typer.Argument(None, help="Root node ID to start from"),
     depth: int = typer.Option(2, "--depth", "-d", help="Traversal depth"),
     max_children: int = typer.Option(5, "--max", "-m", help="Max children per node"),
 ) -> None:
@@ -35,9 +33,7 @@ def tree(
             stats_tree = Tree("[bold]Knowledge Graph Overview[/]")
             stats_tree.add(f"[green]nodes[/]: {stats.node_count}")
             stats_tree.add(f"[green]relationships[/]: {stats.relationship_count}")
-            stats_tree.add(
-                f"[green]vector index[/]: {'ready' if stats.vector_index_ready else 'missing'}"
-            )
+            stats_tree.add(f"[green]vector index[/]: {'ready' if stats.vector_index_ready else 'missing'}")
             console.print(stats_tree)
     except Exception as exc:
         console.print(f"[red]Visualization failed: {exc}[/]")

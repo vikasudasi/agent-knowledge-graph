@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
 from core.extraction_schema import ExtractedKnowledge
 from core.models import PipelineCheckpoint, Relationship, Resource
@@ -18,7 +19,9 @@ logger = logging.getLogger(__name__)
 
 HERMES_DB_PATH = Path.home() / ".hermes" / "state.db"
 
-EXTRACTION_PROMPT = """You are an AI knowledge graph extraction assistant. Analyze this agent conversation session and extract structured knowledge.
+EXTRACTION_PROMPT = """\
+You are an AI knowledge graph extraction assistant.
+Analyze this agent conversation session and extract structured knowledge.
 
 SESSION:
 Title: {title}
@@ -132,7 +135,7 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
             }
 
         resources: list[Resource] = []
-        ingested_at = datetime.now(timezone.utc)
+        ingested_at = datetime.now(UTC)
 
         session_resource = Resource(
             id=f"session:{session_id}",

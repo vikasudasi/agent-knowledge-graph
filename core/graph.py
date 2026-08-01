@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from neo4j import Driver, GraphDatabase
@@ -37,7 +37,7 @@ class Neo4jClient:
             self._driver.close()
             self._driver = None
 
-    def __enter__(self) -> "Neo4jClient":
+    def __enter__(self) -> Neo4jClient:
         self.connect()
         return self
 
@@ -56,9 +56,7 @@ class Neo4jClient:
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (r:Resource) REQUIRE r.id IS UNIQUE")
             session.run("CREATE INDEX IF NOT EXISTS FOR (r:Resource) ON (r.type)")
             session.run("CREATE INDEX IF NOT EXISTS FOR (r:Resource) ON (r.label)")
-            session.run(
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (c:PipelineCheckpoint) REQUIRE c.pipeline_name IS UNIQUE"
-            )
+            session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:PipelineCheckpoint) REQUIRE c.pipeline_name IS UNIQUE")
 
             dimension = self._config.embedding.dimension
             session.run("DROP INDEX resource_embedding IF EXISTS")
@@ -115,7 +113,7 @@ class Neo4jClient:
                     "type": resource.type,
                     "label": resource.label,
                     "properties": resource.properties or {},
-                    "ingested_at": (resource.ingested_at or datetime.now(timezone.utc)).isoformat(),
+                    "ingested_at": (resource.ingested_at or datetime.now(UTC)).isoformat(),
                 },
             )
             if resource.embedding is not None:
@@ -146,7 +144,7 @@ class Neo4jClient:
                         "type": resource.type,
                         "label": resource.label,
                         "properties": resource.properties or {},
-                        "ingested_at": (resource.ingested_at or datetime.now(timezone.utc)).isoformat(),
+                        "ingested_at": (resource.ingested_at or datetime.now(UTC)).isoformat(),
                     },
                 )
                 if resource.embedding is not None:
@@ -409,11 +407,9 @@ class Neo4jClient:
                     "name": checkpoint.pipeline_name,
                     "last_id": checkpoint.last_processed_id,
                     "last_processed_timestamp": (
-                        checkpoint.last_processed_timestamp.isoformat()
-                        if checkpoint.last_processed_timestamp
-                        else None
+                        checkpoint.last_processed_timestamp.isoformat() if checkpoint.last_processed_timestamp else None
                     ),
                     "total": checkpoint.total_processed,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(UTC).isoformat(),
                 },
             )

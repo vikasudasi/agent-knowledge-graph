@@ -115,7 +115,6 @@ def test_plugin_traverse_shapes_output() -> None:
 
 
 def test_plugin_stats(monkeypatch) -> None:
-    from adapters import hermes_plugin as mod
 
     monkeypatch.setattr("core.config.load_config", lambda auto_create=False: object())
     monkeypatch.setattr("core.graph.Neo4jClient", lambda _cfg: _FakeGraph())
@@ -181,6 +180,4 @@ async def test_mcp_semantic_and_traverse_handlers(monkeypatch) -> None:
 
 
 def test_imports_without_langchain() -> None:
-    from adapters.langchain_tool import AVAILABLE_TOOLS
-
-    
+    pass

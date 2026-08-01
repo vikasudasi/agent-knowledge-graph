@@ -174,10 +174,8 @@ class OpenRouterProvider(LLMClient):
             try:
                 response = self._client.post("chat/completions", json=body)
                 if response.status_code == 429:
-                    retry_after = int(response.headers.get("Retry-After", 2 ** attempt))
-                    logger.warning(
-                        f"Rate limited, retrying in {retry_after}s (attempt {attempt + 1}/{max_retries})"
-                    )
+                    retry_after = int(response.headers.get("Retry-After", 2**attempt))
+                    logger.warning(f"Rate limited, retrying in {retry_after}s (attempt {attempt + 1}/{max_retries})")
                     time.sleep(retry_after)
                     continue
                 if response.status_code == 401:
@@ -197,9 +195,7 @@ class OpenRouterProvider(LLMClient):
             except (httpx.HTTPStatusError, httpx.RequestError) as exc:
                 if attempt < max_retries:
                     delay = 2 ** (attempt + 1)
-                    logger.warning(
-                        f"HTTP error, retrying in {delay}s (attempt {attempt + 1}/{max_retries}): {exc}"
-                    )
+                    logger.warning(f"HTTP error, retrying in {delay}s (attempt {attempt + 1}/{max_retries}): {exc}")
                     time.sleep(delay)
                 else:
                     raise LLMError(f"Request failed after {max_retries + 1} attempts: {exc}") from exc
@@ -244,8 +240,7 @@ class OpenRouterProvider(LLMClient):
     ) -> BaseModel:
         model = self._get_model(model, task="extraction")
         system_prompt = (
-            system_prompt
-            or "You are a structured data extraction assistant. Always respond with valid JSON."
+            system_prompt or "You are a structured data extraction assistant. Always respond with valid JSON."
         )
         messages = _ensure_system_prompt(messages, system_prompt)
 
@@ -308,8 +303,5 @@ class LLMProviderFactory:
         """Create an LLM client from the root config."""
         provider_name = config.llm.provider
         if provider_name not in cls._providers:
-            raise ValueError(
-                f"Unknown LLM provider: {provider_name}. "
-                f"Available: {', '.join(cls._providers)}"
-            )
+            raise ValueError(f"Unknown LLM provider: {provider_name}. Available: {', '.join(cls._providers)}")
         return cls._providers[provider_name](config.llm)

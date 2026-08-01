@@ -61,8 +61,7 @@ def create_mcp_handlers() -> dict[str, Any]:
             "start_id": start_id,
             "nodes": [{"id": node.id, "type": node.type, "label": node.label} for node in result.nodes],
             "relationships": [
-                {"source": rel.source_id, "target": rel.target_id, "type": rel.type}
-                for rel in result.relationships
+                {"source": rel.source_id, "target": rel.target_id, "type": rel.type} for rel in result.relationships
             ],
             "execution_time_ms": result.execution_time_ms,
         }

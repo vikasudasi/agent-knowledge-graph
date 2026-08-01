@@ -17,6 +17,6 @@ jobs:
         with:
           python-version: "3.11"
       - name: Sync dependencies
-        run: uv sync
+        run: uv sync --extra dev
       - name: Run mypy
         run: uv run mypy core/ cli/ pipelines/

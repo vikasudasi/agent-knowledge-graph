@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import typer
 from rich.console import Console
@@ -56,7 +55,7 @@ def run(
     pipeline: str = typer.Argument(..., help="Pipeline name to run (or 'all')"),
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Run without writing to graph"),
     full_rebuild: bool = typer.Option(False, "--rebuild", "-f", help="Ignore checkpoints, full rebuild"),
-    limit: Optional[int] = typer.Option(None, "--limit", "-l", help="Max records to process"),
+    limit: int | None = typer.Option(None, "--limit", "-l", help="Max records to process"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Detailed logging"),
 ) -> None:
     """Run one or all registered pipelines to build the knowledge graph."""

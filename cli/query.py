@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -33,7 +31,7 @@ def _get_engine() -> QueryEngine:
 def semantic(
     query: str,
     top_k: int = typer.Option(10, "--top", "-k", help="Number of results"),
-    type_filter: Optional[str] = typer.Option(
+    type_filter: str | None = typer.Option(
         None,
         "--type",
         "-t",

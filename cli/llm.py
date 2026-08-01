@@ -47,8 +47,7 @@ def extract() -> None:
                 {
                     "role": "user",
                     "content": (
-                        "Vik is the architect behind agent-knowledge-graph."
-                        " He works on AI and cloud architecture."
+                        "Vik is the architect behind agent-knowledge-graph. He works on AI and cloud architecture."
                     ),
                 }
             ],

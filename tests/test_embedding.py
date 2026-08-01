@@ -166,9 +166,7 @@ class TestRemoteEmbeddingProvider:
     def config(self):  # noqa: ANN201
         from core.config import EmbeddingConfig
 
-        return EmbeddingConfig(
-            provider="openai", api_key="test-key", model="text-embedding-3-small", dimension=1536
-        )
+        return EmbeddingConfig(provider="openai", api_key="test-key", model="text-embedding-3-small", dimension=1536)
 
     def test_embed(self, config) -> None:  # noqa: ANN001
         with patch("httpx.Client") as mock_client_cls:
