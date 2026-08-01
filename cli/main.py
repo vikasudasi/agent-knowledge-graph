@@ -5,8 +5,11 @@ from __future__ import annotations
 from typing import Annotated
 
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from cli.init import run_init
+from core.config import load_config
 
 app = typer.Typer(
     name="kg",
@@ -51,7 +54,30 @@ def query(
 @app.command()
 def status() -> None:
     """Show knowledge graph stats and health."""
-    typer.echo("[kg] status not yet implemented")
+    from core.graph import Neo4jClient
+
+    cfg = load_config(auto_create=False)
+    try:
+        with Neo4jClient(cfg) as client:
+            stats = client.get_stats()
+            console = Console()
+            table = Table(title="Knowledge Graph Status")
+            table.add_column("Metric", style="bold")
+            table.add_column("Value")
+            table.add_row("Nodes", str(stats.node_count))
+            table.add_row("Relationships", str(stats.relationship_count))
+            table.add_row(
+                "Vector Index",
+                "[green]✓ Ready[/]" if stats.vector_index_ready else "[red]✗ Not found[/]",
+            )
+            for name, cp in stats.last_checkpoints.items():
+                table.add_row(
+                    f"Checkpoint: {name}",
+                    f"{cp.total_processed} items, last: {cp.last_processed_id[:20]}...",
+                )
+            console.print(table)
+    except Exception as exc:
+        Console().print(f"[red]Cannot connect to Neo4j: {exc}[/]")
 
 
 if __name__ == "__main__":

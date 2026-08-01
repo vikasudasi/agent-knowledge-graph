@@ -7,25 +7,30 @@ from rich.console import Console
 from rich.panel import Panel
 
 from core.config import load_config
+from core.graph import Neo4jClient
 
 console = Console()
 
 
 def run_init(reset: bool = False) -> None:
-    """Initialize config and Neo4j.
-
-    If reset is True, overwrite existing config with defaults.
-    """
-
-    _ = reset
+    """Initialize config and Neo4j schema."""
     try:
         cfg = load_config(auto_create=True)
+        if reset:
+            console.print("[yellow]Reset requested — dropping existing schema...[/]")
+
+        with Neo4jClient(cfg) as client:
+            if reset:
+                client.drop_schema()
+            client.initialize_schema()
+            stats = client.get_stats()
+
         console.print(
             Panel.fit(
-                f"[bold green]✓[/] Config loaded from {cfg._config_path}\n"
-                f"  LLM provider: {cfg.llm.provider}\n"
-                f"  Embedding: {cfg.embedding.provider} ({cfg.embedding.local_model})\n"
-                f"  Neo4j: {cfg.neo4j.uri}",
+                f"[bold green]✓[/] Config loaded\n"
+                f"  [bold green]✓[/] Neo4j schema initialized\n"
+                f"  Nodes: {stats.node_count}, Relationships: {stats.relationship_count}\n"
+                f"  Vector index: {'[green]ready[/]' if stats.vector_index_ready else '[yellow]pending[/]'}",
                 title="agent-knowledge-graph",
             )
         )
