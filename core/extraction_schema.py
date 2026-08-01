@@ -13,7 +13,7 @@ class ExtractedEntity(BaseModel):
         ...,
         description="person|project|tool|concept|file|task|skill|artifact",
     )
-    label: str = Field(..., description="Human-readable short label")
+    label: str = Field(default="", description="Human-readable short label. Use name if unknown.")
     confidence: float = Field(default=0.8, ge=0.0, le=1.0)
     aliases: list[str] = Field(default_factory=list)
     context: str = Field(default="", description="Why this entity was extracted")
@@ -25,7 +25,7 @@ class ExtractedRelation(BaseModel):
     source: str = Field(..., description="Source entity name")
     target: str = Field(..., description="Target entity name")
     type: str = Field(
-        ...,
+        default="mentions",
         description="mentions|produces|uses|decides|references|blocks|resolves|assigns",
     )
     weight: float = Field(default=0.5, ge=0.0, le=1.0)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import UTC, datetime
 from typing import Any
@@ -98,12 +99,12 @@ class Neo4jClient:
         ON CREATE SET
             r.type = $type,
             r.label = $label,
-            r.properties = $properties,
+            r.properties_json = $properties_json,
             r.ingested_at = $ingested_at
         ON MATCH SET
             r.type = $type,
             r.label = $label,
-            r.properties = $properties
+            r.properties_json = $properties_json
         """
         with self.driver.session(database=self._config.neo4j.database) as session:
             session.run(
@@ -112,7 +113,7 @@ class Neo4jClient:
                     "id": resource.id,
                     "type": resource.type,
                     "label": resource.label,
-                    "properties": resource.properties or {},
+                    "properties_json": json.dumps(resource.properties or {}),
                     "ingested_at": (resource.ingested_at or datetime.now(UTC)).isoformat(),
                 },
             )
@@ -132,18 +133,18 @@ class Neo4jClient:
                     ON CREATE SET
                         r.type = $type,
                         r.label = $label,
-                        r.properties = $properties,
+                        r.properties_json = $properties_json,
                         r.ingested_at = $ingested_at
                     ON MATCH SET
                         r.type = $type,
                         r.label = $label,
-                        r.properties = $properties
+                        r.properties_json = $properties_json
                     """,
                     {
                         "id": resource.id,
                         "type": resource.type,
                         "label": resource.label,
-                        "properties": resource.properties or {},
+                        "properties_json": json.dumps(resource.properties or {}),
                         "ingested_at": (resource.ingested_at or datetime.now(UTC)).isoformat(),
                     },
                 )
@@ -161,11 +162,19 @@ class Neo4jClient:
             if record is None:
                 return None
             node = record["r"]
+            raw_props = node.get("properties_json")
+            if isinstance(raw_props, str):
+                try:
+                    parsed = json.loads(raw_props)
+                except json.JSONDecodeError:
+                    parsed = {}
+            else:
+                parsed = {}
             return Resource(
                 id=node.get("id", resource_id),
                 type=node.get("type", "unknown"),
                 label=node.get("label", ""),
-                properties=dict(node.get("properties", {}) or {}),
+                properties=parsed,
                 embedding=node.get("embedding"),
             )
 
@@ -175,8 +184,8 @@ class Neo4jClient:
         MATCH (a:Resource {id: $source_id})
         MATCH (b:Resource {id: $target_id})
         MERGE (a)-[r:RELATES {type: $rel_type}]->(b)
-        ON CREATE SET r += $properties
-        ON MATCH SET r += $properties
+        ON CREATE SET r.properties_json = $properties_json
+        ON MATCH SET r.properties_json = $properties_json
         """
         with self.driver.session(database=self._config.neo4j.database) as session:
             session.run(
@@ -185,7 +194,7 @@ class Neo4jClient:
                     "source_id": rel.source_id,
                     "target_id": rel.target_id,
                     "rel_type": rel.type,
-                    "properties": rel.properties or {},
+                    "properties_json": json.dumps(rel.properties or {}),
                 },
             )
 
@@ -198,16 +207,27 @@ class Neo4jClient:
                     MATCH (a:Resource {id: $source_id})
                     MATCH (b:Resource {id: $target_id})
                     MERGE (a)-[r:RELATES {type: $rel_type}]->(b)
-                    ON CREATE SET r += $properties
-                    ON MATCH SET r += $properties
+                    ON CREATE SET r.properties_json = $properties_json
+                    ON MATCH SET r.properties_json = $properties_json
                     """,
                     {
                         "source_id": rel.source_id,
                         "target_id": rel.target_id,
                         "rel_type": rel.type,
-                        "properties": rel.properties or {},
+                        "properties_json": json.dumps(rel.properties or {}),
                     },
                 )
+
+    @staticmethod
+    def _extract_properties(record_node: dict[str, Any] | Any) -> dict[str, Any]:
+        """Extract properties from a Neo4j node/relationship record, handling JSON serialization."""
+        raw = record_node.get("properties_json")
+        if isinstance(raw, str):
+            try:
+                return dict(json.loads(raw))
+            except (json.JSONDecodeError, TypeError):
+                return {}
+        return dict(raw or {})
 
     def vector_search(
         self,
@@ -238,7 +258,7 @@ class Neo4jClient:
                         id=node.get("id", ""),
                         type=node.get("type", "unknown"),
                         label=node.get("label", ""),
-                        properties=dict(node.get("properties", {}) or {}),
+                        properties=self._extract_properties(node),
                     )
                 )
                 scores.append(float(record["score"]))
@@ -283,7 +303,7 @@ class Neo4jClient:
                             id=node_id,
                             type=node.get("type", "unknown"),
                             label=node.get("label", ""),
-                            properties=dict(node.get("properties", {}) or {}),
+                            properties=self._extract_properties(node),
                         )
                 for rel in record["rels"]:
                     rel_type = rel.get("type")
@@ -294,7 +314,7 @@ class Neo4jClient:
                             source_id=rel.get("source_id", ""),
                             target_id=rel.get("target_id", ""),
                             type=rel_type or "RELATES",
-                            properties=dict(rel.get("properties", {}) or {}),
+                            properties=self._extract_properties(rel),
                         )
                     )
 
@@ -334,7 +354,7 @@ class Neo4jClient:
                         id=node.get("id", ""),
                         type=node.get("type", "unknown"),
                         label=node.get("label", ""),
-                        properties=dict(node.get("properties", {}) or {}),
+                        properties=self._extract_properties(node),
                     )
                 )
                 scores.append(float(record["score"]))

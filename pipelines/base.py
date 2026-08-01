@@ -31,6 +31,7 @@ class PipelineContext:
     graph: Neo4jClient
     dry_run: bool = False
     full_rebuild: bool = False
+    max_records: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

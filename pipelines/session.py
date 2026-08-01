@@ -29,16 +29,27 @@ Started: {started_at}
 Messages:
 {messages}
 
-Extract the following in JSON format:
-1. summary: One paragraph summarizing what happened
-2. topics: Key topics discussed (3-5 tags)
-3. entities: People, projects, tools, concepts, files, tasks mentioned
-4. relations: Relationships between entities
-5. decisions: Key decisions or conclusions
-6. tools_used: Any tools or commands used
-7. outcome: Was the goal completed, in progress, or failed?
+Extract the following in JSON format with EXACTLY this structure:
 
-Be thorough but accurate. Only extract what is clearly present in the text."""
+{{
+  "summary": "One paragraph summarizing what happened",
+  "topics": ["topic1", "topic2", "topic3"],
+  "entities": [
+    {{"name": "EntityName", "type": "person|project|tool|concept|file|task|skill|artifact", "label": "Short human-readable label", "context": "Why this entity is relevant"}}
+  ],
+  "relations": [
+    {{"source": "EntityA", "target": "EntityB", "type": "mentions|produces|uses|decides|references|blocks|resolves|assigns", "context": "Evidence from conversation"}}
+  ],
+  "decisions": ["Decision or conclusion"],
+  "tools_used": ["tool/command"],
+  "outcome": "completed|in_progress|failed|unknown"
+}}
+
+CRITICAL RULES:
+- "entities" MUST be a JSON array of objects. Each object MUST have "name", "type", and "label" fields.
+- "relations" MUST be a JSON array of objects. Each object MUST have "source", "target", and "type" fields.
+- Do NOT use strings for entities or relations — use the object format shown above.
+- Be thorough but accurate. Only extract what is clearly present in the text."""
 
 
 class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
@@ -77,21 +88,31 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
                 logger.warning(f"No 'sessions' table in {db_path}")
                 return
 
-            query = "SELECT id, title, started_at, created_at FROM sessions"
+            query = "SELECT id, title, started_at FROM sessions"
             params: dict[str, Any] = {}
             if checkpoint and checkpoint.last_processed_id:
                 query += " WHERE id > :checkpoint_id"
                 params["checkpoint_id"] = checkpoint.last_processed_id
             query += " ORDER BY id ASC"
 
+            from datetime import datetime, timezone
+
             session_rows = cursor.execute(query, params).fetchall()
+            processed = 0
             for row in session_rows:
+                if context.max_records is not None and processed >= context.max_records:
+                    break
+                processed += 1
                 session = dict(row)
                 messages: list[str] = []
+                # Convert Unix timestamp to ISO date
+                ts = session.get("started_at")
+                if isinstance(ts, (int, float)):
+                    session["started_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
                 if "messages" in table_names:
                     msg_rows = msg_cursor.execute(
-                        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY created_at ASC",
+                        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
                         (session["id"],),
                     ).fetchall()
                     for msg in msg_rows:
@@ -140,7 +161,7 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
         session_resource = Resource(
             id=f"session:{session_id}",
             type="session",
-            label=title[:200],
+            label=(title or "Untitled Session")[:200],
             properties={
                 "session_id": session_id,
                 "title": title,

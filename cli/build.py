@@ -21,20 +21,20 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
-def _build_context(config: KGConfig, *, dry_run: bool = False, full_rebuild: bool = False) -> PipelineContext:
+def _build_context(config: KGConfig, *, dry_run: bool = False, full_rebuild: bool = False, limit: int | None = None) -> PipelineContext:
     """Build a PipelineContext from config."""
     graph = Neo4jClient(config)
     graph.connect()
-    llm = LLMProviderFactory.create(config)
     embedder = EmbeddingProviderFactory.create(config)
+    llm = LLMProviderFactory.create(config)
     return PipelineContext(
         config=config,
         graph=graph,
-        llm=llm,
         embedder=embedder,
+        llm=llm,
         dry_run=dry_run,
         full_rebuild=full_rebuild,
-        metadata={"version": "1.0"},
+        max_records=limit,
     )
 
 
@@ -78,7 +78,7 @@ def run(
         pipelines_to_run = [matched]
 
     console.print(f"[bold]Running {len(pipelines_to_run)} pipeline(s)[/]")
-    context = _build_context(config, dry_run=dry_run, full_rebuild=full_rebuild)
+    context = _build_context(config, dry_run=dry_run, full_rebuild=full_rebuild, limit=limit)
     try:
         for pipe in pipelines_to_run:
             console.print(f"\n[cyan]=== {pipe.name} ({pipe.description}) ===[/]")

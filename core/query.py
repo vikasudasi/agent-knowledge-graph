@@ -14,8 +14,8 @@ from core.models import QueryResult as KGQueryResult
 NL_CYPHER_SYSTEM_PROMPT = """You are a Neo4j Cypher query generator for a knowledge graph.
 
 SCHEMA:
-- Nodes: (:Resource {id, type, label, properties, embedding})
-- Relationships: (:Resource)-[:RELATES {type, weight, context}]->(:Resource)
+- Nodes: (:Resource {id, type, label, properties_json, embedding})
+- Relationships: (:Resource)-[:RELATES {type, properties_json}]->(:Resource)
 - Resource types: session, person, project, tool, concept, file, task, skill, artifact
 - Relationship types: mentions, produces, uses, decides, references, blocks, resolves, assigns
 
@@ -23,7 +23,8 @@ Generate ONLY the Cypher query. No explanations. Return valid Cypher only.
 
 GUIDELINES:
 - Use MATCH with labels for filtering: MATCH (r:Resource {type: 'person'})
-- For text search: WHERE r.label CONTAINS 'term' OR r.properties CONTAINS 'term'
+- For text search: WHERE r.label CONTAINS 'term'
+- For properties stored as JSON: use r.properties_json CONTAINS 'term' for text search
 - For relationships: MATCH (a:Resource {id: $id})-[:RELATES]->(b:Resource)
 - Always RETURN distinct results
 - Limit results to 20 unless the user asks for more
