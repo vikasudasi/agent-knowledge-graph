@@ -1,331 +1,434 @@
-# agent-knowledge-graph — Repo Scaffolding & CI
+# agent-knowledge-graph — Config System (Task 2)
 
-## Project Overview
+## What to Build
 
-Build the foundational repository structure for `agent-knowledge-graph` — an open-source CLI tool + Python library that gives AI agents persistent structured memory via a Neo4j knowledge graph with vector (semantic) search.
+Implement the XDG-based configuration system for agent-knowledge-graph. This is the core `core/config.py` module that every other layer depends on. It must support YAML config files, environment variable overrides, schema validation, and default generation.
 
-## Tech Stack
+## Files to Modify
 
-- Python 3.11+
-- `uv` for dependency management (no pip/poetry)
-- `typer` for CLI (with `rich` for console output)
-- `neo4j` driver for graph DB
-- `sentence-transformers` for local embeddings
-- `httpx` for LLM API calls (OpenRouter)
-- `pydantic` for config validation
-- `pytest` + `pytest-cov` + `pytest-asyncio` for testing
-- `ruff` for linting, `mypy` for type checking
-- GitHub Actions for CI
+- `core/config.py` — full implementation (replace the placeholder)
+- `core/models.py` — add Pydantic config models
+- `core/__init__.py` — export the public API
+- `cli/init.py` — wire up default config generation
+- `tests/test_config.py` — comprehensive test suite
 
-## File Structure to Create
+## Detailed Implementation
 
-```
-/root/agent-knowledge-graph/
-├── .gitignore
-├── .pre-commit-config.yaml
-├── LICENSE                    # MIT
-├── README.md                  # 14-section skeleton (fill with real content)
-├── pyproject.toml             # Build config, deps, entry points
-├── core/
-│   ├── __init__.py
-│   ├── config.py              # placeholder
-│   ├── graph.py               # placeholder (Neo4j client)
-│   ├── llm.py                 # placeholder (LLM abstraction)
-│   ├── embedding.py           # placeholder (embedding provider)
-│   └── models.py              # placeholder (Pydantic models)
-├── pipelines/
-│   ├── __init__.py
-│   ├── base.py               # placeholder (pipeline framework)
-│   └── session.py            # placeholder (session-ingest pipeline)
-├── adapters/
-│   ├── __init__.py
-│   ├── hermes/
-│   │   ├── __init__.py
-│   │   └── plugin.py         # placeholder
-│   ├── mcp/
-│   │   ├── __init__.py
-│   │   └── server.py         # placeholder
-│   └── langchain/
-│       ├── __init__.py
-│       └── tool.py           # placeholder
-├── cli/
-│   ├── __init__.py
-│   ├── main.py               # Typer app entry point
-│   ├── init.py               # kg init command (placeholder)
-│   ├── build.py              # kg build command (placeholder)
-│   ├── query.py              # kg query command (placeholder)
-│   └── status.py             # kg status command (placeholder)
-├── docker/
-│   └── docker-compose.yml    # placeholder
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py
-│   ├── test_cli.py
-│   └── test_config.py        # placeholder
-├── docs/
-│   ├── ARCHITECTURE.md       # placeholder
-│   ├── PIPELINES.md          # placeholder
-│   └── AGENTS.md             # placeholder
-└── .github/
-    ├── dependabot.yml
-    └── workflows/
-        ├── test.yml          # pytest + coverage
-        ├── lint.yml          # ruff
-        ├── typecheck.yml     # mypy
-        └── build.yml         # wheel build
-```
+### 1. Config Path Resolution (core/config.py)
 
-## README Requirements
-
-The README.md must be comprehensive and professional:
-- Title + one-liner value proposition ("Persistent knowledge graph memory for AI agents")
-- Badges: CI status, coverage, Python version, license
-- "Why" section explaining the problem (agents have no persistent structured memory)
-- Installation instructions (pip install, source install, dev install)
-- Quick start: 5 steps from install to first query
-- Detailed usage examples with real commands and output
-- CLI options reference table
-- Architecture overview (layer diagram in Mermaid)
-- Configuration reference
-- Pipeline system explanation
-- Agent adapters overview (Hermes, MCP, LangChain)
-- Contributing guide
-- FAQ (Docker required? Do I need an API key?)
-- License section (MIT)
-- Target: 200+ lines, 14+ sections, no placeholder content
-
-## pyproject.toml Requirements
-
-```toml
-[build-system]
-requires = ["setuptools", "wheel"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "agent-knowledge-graph"
-version = "0.1.0"
-description = "Persistent knowledge graph memory for AI agents — Neo4j + vector search + NL→Cypher"
-requires-python = ">=3.11"
-dependencies = [
-    "typer>=0.12",
-    "rich>=13.0",
-    "neo4j>=5.20",
-    "httpx>=0.27",
-    "pydantic>=2.0",
-    "pydantic-settings>=2.0",
-    "pyyaml>=6.0",
-    "sentence-transformers>=3.0",
-    "pygments>=2.17",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-cov>=5.0",
-    "pytest-asyncio>=0.24",
-    "ruff>=0.5",
-    "mypy>=1.10",
-    "pre-commit>=3.0",
-    "uv>=0.4",
-]
-hermes = [
-    "hermes-agent>=1.0",
-]
-mcp = [
-    "mcp>=1.0",
-]
-
-[project.scripts]
-kg = "cli.main:app"
-
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-[tool.ruff.lint]
-select = ["E", "F", "I", "N", "W", "UP"]
-[tool.ruff.format]
-quote-style = "double"
-
-[tool.mypy]
-python_version = "3.11"
-strict = true
-ignore_missing_imports = true
-warn_unused_ignores = true
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = "-v --cov=core --cov=cli --cov=pipelines --cov-report=term-missing"
-asyncio_mode = "auto"
-```
-
-## .gitignore Requirements
-
-Must include patterns for:
-- Python: `__pycache__/`, `*.pyc`, `*.pyo`, `*.egg-info/`, `dist/`, `build/`
-- Virtual envs: `.venv/`, `venv/`, `.env`
-- Neo4j: `data/`, `logs/`, `import/` (Docker volumes)
-- IDE: `.vscode/`, `.idea/`, `*.swp`
-- OS: `.DS_Store`, `Thumbs.db`
-- Coverage: `.coverage`, `coverage/`, `htmlcov/`
-- Cache: `.ruff_cache/`, `.mypy_cache/`, `.pytest_cache/`
-
-## GitHub Actions Workflows
-
-### test.yml (on push/PR to main)
-- Setup: checkout, install uv, python 3.11, `uv sync`
-- Test: `uv run pytest --cov --cov-report=term-missing`
-- Matrix: python 3.11, 3.12
-
-### lint.yml (on push/PR)
-- Setup: checkout, install uv, python 3.11
-- Run: `uv run ruff check .`
-- Run: `uv run ruff format --check .`
-
-### typecheck.yml (on push/PR)
-- Setup: checkout, install uv, python 3.11, `uv sync`
-- Run: `uv run mypy core/ cli/ pipelines/`
-
-### build.yml (on tag push v*)
-- Setup: checkout, install uv, python 3.11
-- Build: `uv build`
-- Upload: store wheel as artifact
-
-### dependabot.yml
-- `pip` ecosystem, weekly checks
-- Assignee: vikasudasi
-
-## Pre-commit Config
-
-```yaml
-repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.5.0
-    hooks:
-      - id: ruff
-        args: [--fix]
-      - id: ruff-format
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.10.0
-    hooks:
-      - id: mypy
-        additional_dependencies: [pydantic]
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.6.0
-    hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-      - id: check-added-large-files
-```
-
-## CLI Entry Point (kg command)
-
-The `cli/main.py` must create a Typer app with placeholder subcommands:
-
-```python
-import typer
-
-app = typer.Typer(
-    name="kg",
-    help="agent-knowledge-graph — Persistent knowledge for AI agents",
-    rich_markup_mode="rich",
-)
-
-@app.command()
-def init(
-    reset: bool = typer.Option(False, "--reset", help="Reset Neo4j and re-initialize"),
-):
-    """Initialize Neo4j and create schema."""
-    typer.echo("[kg] init not yet implemented")
-
-@app.command()
-def build(
-    pipeline: str = typer.Argument(..., help="Pipeline name (sessions, files)"),
-    full: bool = typer.Option(False, "--full", help="Full rebuild from scratch"),
-    limit: int = typer.Option(None, "--limit", help="Max items to process"),
-):
-    """Run an ingestion pipeline."""
-    typer.echo(f"[kg] build {pipeline} not yet implemented")
-
-@app.command()
-def query(
-    question: str = typer.Argument(..., help="Natural language question"),
-    cypher: bool = typer.Option(False, "--cypher", help="Raw Cypher mode"),
-    json_output: bool = typer.Option(False, "--json", help="JSON output format"),
-):
-    """Query the knowledge graph."""
-    typer.echo(f"[kg] query not yet implemented")
-
-@app.command()
-def status():
-    """Show knowledge graph stats and health."""
-    typer.echo("[kg] status not yet implemented")
-
-if __name__ == "__main__":
-    app()
-```
-
-## Placeholder Files
-
-All placeholder Python files (`core/*.py`, `pipelines/*.py`, `adapters/*/*.py`, `tests/*.py`) must:
-- Have proper `__init__.py` files where needed
-- Have a module docstring
-- Have a class/function stub that raises `NotImplementedError`
-- Use `from __future__ import annotations`
-- Have proper type hints
-
-Example placeholder:
 ```python
 """Configuration management for agent-knowledge-graph."""
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+from typing import Any
 
-class ConfigManager:
-    """Loads and manages configuration from XDG config paths."""
+import yaml
+from pydantic import BaseModel, Field, field_validator
 
-    def __init__(self) -> None:
-        raise NotImplementedError("ConfigManager not yet implemented")
+
+class LLMConfig(BaseModel):
+    """LLM provider configuration."""
+    provider: str = "openrouter"
+    api_key: str = ""
+    base_url: str = "https://openrouter.ai/api/v1"
+    default_model: str = "deepseek/deepseek-v4-flash-0731"
+    extraction_model: str = "deepseek/deepseek-v4-flash-0731"
+    query_model: str = "deepseek/deepseek-v4-flash-0731"
+    max_retries: int = 3
+    timeout: int = 60
+
+
+class EmbeddingConfig(BaseModel):
+    """Embedding provider configuration."""
+    provider: str = "local"
+    local_model: str = "all-MiniLM-L6-v2"
+    dimension: int = 384
+    batch_size: int = 32
+    # Remote embedding settings (only used when provider != "local")
+    api_key: str = ""
+    model: str = "text-embedding-3-small"
+
+
+class Neo4jConfig(BaseModel):
+    """Neo4j connection configuration."""
+    uri: str = "bolt://localhost:7687"
+    user: str = "neo4j"
+    password: str = "password"
+    database: str = "neo4j"
+    max_connection_pool_size: int = 10
+    connection_timeout: int = 30
+
+
+class PipelineConfig(BaseModel):
+    """Pipeline-specific configuration."""
+    session_ingest_batch_size: int = 10
+    session_ingest_max_workers: int = 4
+    dry_run: bool = False
+
+
+class StorageConfig(BaseModel):
+    """Storage and data directory configuration."""
+    data_dir: str = "~/.local/share/agent-knowledge-graph"
+
+
+class KGConfig(BaseModel):
+    """Root configuration model."""
+    llm: LLMConfig = Field(default_factory=LLMConfig)
+    embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    neo4j: Neo4jConfig = Field(default_factory=Neo4jConfig)
+    pipelines: PipelineConfig = Field(default_factory=PipelineConfig)
+    storage: StorageConfig = Field(default_factory=StorageConfig)
+    verbose: bool = False
+
+    @field_validator("llm")
+    @classmethod
+    def validate_llm(cls, v: LLMConfig) -> LLMConfig:
+        if v.provider not in ("openrouter", "openai", "anthropic", "custom"):
+            raise ValueError(f"Unknown LLM provider: {v.provider}")
+        return v
+
+    @field_validator("embedding")
+    @classmethod
+    def validate_embedding(cls, v: EmbeddingConfig) -> EmbeddingConfig:
+        if v.provider not in ("local", "openrouter", "openai"):
+            raise ValueError(f"Unknown embedding provider: {v.provider}")
+        if v.dimension not in (384, 768, 1024, 1536, 3072):
+            raise ValueError(f"Unsupported embedding dimension: {v.dimension}")
+        return v
 ```
 
-## Docker Placeholder
+### 2. Config Loader
 
-`docker/docker-compose.yml` must be a valid Docker Compose file for Neo4j 5.x:
+```python
+# In core/config.py, after the models
 
-```yaml
-version: "3.8"
-services:
-  neo4j:
-    image: neo4j:5-community
-    container_name: kg-neo4j
-    ports:
-      - "7687:7687"  # Bolt
-      - "7474:7474"  # HTTP
-    environment:
-      NEO4J_AUTH: neo4j/password
-      NEO4J_PLUGINS: '["apoc"]'
-      NEO4J_dbms_memory_pagecache_size: 2G
-      NEO4J_dbms_memory_heap_initial__size: 2G
-      NEO4J_dbms_memory_heap_max__size: 4G
-    volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
-    healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-volumes:
-  neo4j_data:
-  neo4j_logs:
+def _xdg_config_home() -> Path:
+    """Return the XDG config directory."""
+    return Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+
+
+def _default_config_paths() -> list[Path]:
+    """Return config paths in priority order (first found wins)."""
+    return [
+        _xdg_config_home() / "agent-knowledge-graph" / "config.yaml",
+        Path.home() / ".agent-knowledge-graph.yaml",
+    ]
+
+
+ENV_PREFIX = "KG_"
+ENV_MAP: dict[str, str] = {
+    # kg config key path -> env var
+    "llm.api_key": "KG_LLM_API_KEY",
+    "llm.base_url": "KG_LLM_BASE_URL",
+    "llm.provider": "KG_LLM_PROVIDER",
+    "llm.default_model": "KG_LLM_DEFAULT_MODEL",
+    "llm.extraction_model": "KG_LLM_EXTRACTION_MODEL",
+    "llm.query_model": "KG_LLM_QUERY_MODEL",
+    "embedding.provider": "KG_EMBEDDING_PROVIDER",
+    "embedding.dimension": "KG_EMBEDDING_DIMENSION",
+    "neo4j.uri": "KG_NEO4J_URI",
+    "neo4j.user": "KG_NEO4J_USER",
+    "neo4j.password": "KG_NEO4J_PASSWORD",
+    "neo4j.database": "KG_NEO4J_DATABASE",
+    "storage.data_dir": "KG_DATA_DIR",
+    "verbose": "KG_VERBOSE",
+    "pipelines.dry_run": "KG_DRY_RUN",
+}
+
+
+def _apply_env_overrides(config: dict[str, Any]) -> dict[str, Any]:
+    """Override config values from KG_* environment variables."""
+    for key_path, env_var in ENV_MAP.items():
+        value = os.environ.get(env_var)
+        if value is not None:
+            # Navigate nested dict by dotted path
+            parts = key_path.split(".")
+            target = config
+            for part in parts[:-1]:
+                if part not in target:
+                    target[part] = {}
+                target = target[part]
+            # Coerce types: bool, int
+            part = parts[-1]
+            if value.lower() in ("true", "1", "yes"):
+                target[part] = True
+            elif value.lower() in ("false", "0", "no"):
+                target[part] = False
+            elif value.isdigit():
+                target[part] = int(value)
+            else:
+                target[part] = value
+    return config
+
+
+def _default_config_dict() -> dict[str, Any]:
+    """Return the default config as a dict."""
+    return KGConfig().model_dump()
+
+
+def _write_default_config(path: Path) -> Path:
+    """Write default config to the given path. Creates parent dirs."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        yaml.dump(_default_config_dict(), f, default_flow_style=False, sort_keys=False)
+    return path
+
+
+def load_config(
+    config_path: Path | None = None,
+    auto_create: bool = True,
+) -> KGConfig:
+    """Load config from file + env overrides.
+
+    Resolution order (first wins):
+    1. Explicit config_path argument
+    2. XDG config home (~/.config/agent-knowledge-graph/config.yaml)
+    3. Home fallback (~/.agent-knowledge-graph.yaml)
+    4. KG_* environment variables (always applied on top)
+    5. Built-in defaults
+
+    If auto_create is True and no config file exists, writes the default
+    to the XDG config path.
+    """
+    # Determine which config file to load
+    config_file: Path | None = None
+    
+    if config_path is not None:
+        if config_path.exists():
+            config_file = config_path
+    else:
+        for path in _default_config_paths():
+            if path.exists():
+                config_file = path
+                break
+    
+    # Load from file or start with defaults
+    if config_file:
+        with open(config_file) as f:
+            raw = yaml.safe_load(f) or {}
+    else:
+        raw = {}
+        if auto_create:
+            config_file = _default_config_paths()[0]
+            _write_default_config(config_file)
+    
+    # Apply env overrides
+    raw = _apply_env_overrides(raw)
+    
+    # Validate and return typed config
+    return KGConfig(**raw)
+
+
+__all__ = [
+    "KGConfig",
+    "LLMConfig",
+    "EmbeddingConfig",
+    "Neo4jConfig",
+    "PipelineConfig",
+    "StorageConfig",
+    "load_config",
+]
+```
+
+### 3. Wire into CLI (cli/init.py)
+
+```python
+"""KG init command — bootstrap configuration and Neo4j."""
+
+from __future__ import annotations
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+
+from core.config import load_config
+
+
+console = Console()
+
+
+def run_init(reset: bool = False) -> None:
+    """Initialize config and Neo4j.
+    
+    If reset is True, overwrite existing config with defaults.
+    """
+    try:
+        cfg = load_config(auto_create=True)
+        console.print(Panel.fit(
+            f"[bold green]✓[/] Config loaded from {cfg._config_path}\n"
+            f"  LLM provider: {cfg.llm.provider}\n"
+            f"  Embedding: {cfg.embedding.provider} ({cfg.embedding.local_model})\n"
+            f"  Neo4j: {cfg.neo4j.uri}",
+            title="agent-knowledge-graph",
+        ))
+    except Exception as e:
+        console.print(f"[bold red]✗[/] Config error: {e}")
+        raise typer.Exit(1)
+```
+
+Note: `cfg._config_path` isn't on the current model — add a `_config_path: Path | None = None` field to `KGConfig` that gets set by `load_config`.
+
+### 4. Update core/__init__.py
+
+```python
+"""Core modules for agent-knowledge-graph."""
+
+from core.config import KGConfig, LLMConfig, EmbeddingConfig, Neo4jConfig, load_config
+
+__all__ = [
+    "KGConfig",
+    "LLMConfig",
+    "EmbeddingConfig",
+    "Neo4jConfig",
+    "load_config",
+]
+```
+
+### 5. Update cli/main.py
+
+Wire the init command to call `run_init()` instead of printing a placeholder:
+
+```python
+from cli.init import run_init
+
+@app.command()
+def init(
+    reset: Annotated[bool, typer.Option("--reset", help="Reset Neo4j and re-initialize")] = False,
+) -> None:
+    """Initialize Neo4j and create schema."""
+    run_init(reset=reset)
+```
+
+### 6. Test Suite (tests/test_config.py)
+
+Replace the existing placeholder test with comprehensive tests:
+
+```python
+"""Tests for the config system."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+import yaml
+
+from core.config import (
+    KGConfig,
+    LLMConfig,
+    load_config,
+    _default_config_paths,
+    _apply_env_overrides,
+    _default_config_dict,
+    _write_default_config,
+)
+
+
+class TestConfigDefaults:
+    def test_default_llm_provider(self):
+        cfg = KGConfig()
+        assert cfg.llm.provider == "openrouter"
+        assert cfg.llm.default_model == "deepseek/deepseek-v4-flash-0731"
+    
+    def test_default_embedding(self):
+        cfg = KGConfig()
+        assert cfg.embedding.provider == "local"
+        assert cfg.embedding.local_model == "all-MiniLM-L6-v2"
+    
+    def test_default_neo4j(self):
+        cfg = KGConfig()
+        assert cfg.neo4j.uri == "bolt://localhost:7687"
+
+
+class TestEnvOverrides:
+    def test_env_override_llm_key(self, monkeypatch):
+        monkeypatch.setenv("KG_LLM_API_KEY", "sk-test-123")
+        cfg = load_config(auto_create=False)
+        assert cfg.llm.api_key == "sk-test-123"
+    
+    def test_env_override_bool(self, monkeypatch):
+        monkeypatch.setenv("KG_VERBOSE", "true")
+        cfg = load_config(auto_create=False)
+        assert cfg.verbose is True
+    
+    def test_env_override_int(self, monkeypatch):
+        monkeypatch.setenv("KG_EMBEDDING_DIMENSION", "768")
+        cfg = load_config(auto_create=False)
+        assert cfg.embedding.dimension == 768
+    
+    def test_env_override_uri(self, monkeypatch):
+        monkeypatch.setenv("KG_NEO4J_URI", "bolt://remote:7687")
+        cfg = load_config(auto_create=False)
+        assert cfg.neo4j.uri == "bolt://remote:7687"
+
+
+class TestConfigFile:
+    def test_write_and_load_default(self, tmp_path):
+        config_dir = tmp_path / ".config" / "agent-knowledge-graph"
+        config_path = config_dir / "config.yaml"
+        _write_default_config(config_path)
+        assert config_path.exists()
+        
+        cfg = load_config(config_path=config_path, auto_create=False)
+        assert cfg.llm.provider == "openrouter"
+    
+    def test_yaml_overrides_default(self, tmp_path):
+        config_path = tmp_path / "test-config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = _default_config_dict()
+        data["llm"]["provider"] = "openai"
+        data["llm"]["api_key"] = "sk-from-file"
+        with open(config_path, "w") as f:
+            yaml.dump(data, f)
+        
+        cfg = load_config(config_path=config_path, auto_create=False)
+        assert cfg.llm.provider == "openai"
+    
+    def test_env_overrides_file(self, tmp_path, monkeypatch):
+        """Env vars should override file values."""
+        config_path = tmp_path / "test-config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = _default_config_dict()
+        data["neo4j"]["uri"] = "bolt://file-config:7687"
+        with open(config_path, "w") as f:
+            yaml.dump(data, f)
+        
+        monkeypatch.setenv("KG_NEO4J_URI", "bolt://env-override:7687")
+        cfg = load_config(config_path=config_path, auto_create=False)
+        assert cfg.neo4j.uri == "bolt://env-override:7687"
+    
+    def test_validation_error_bad_provider(self, tmp_path):
+        config_path = tmp_path / "bad-config.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        data = _default_config_dict()
+        data["llm"]["provider"] = "nonexistent"
+        with open(config_path, "w") as f:
+            yaml.dump(data, f)
+        
+        with pytest.raises(ValueError, match="Unknown LLM provider"):
+            load_config(config_path=config_path, auto_create=False)
+    
+    def test_empty_file_uses_defaults(self, tmp_path):
+        config_path = tmp_path / "empty.yaml"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(config_path, "w") as f:
+            yaml.dump({}, f)
+        
+        cfg = load_config(config_path=config_path, auto_create=False)
+        assert cfg.llm.default_model == "deepseek/deepseek-v4-flash-0731"
 ```
 
 ## Instructions for Cursor
 
-1. Create ALL files listed in the file structure above
-2. Every placeholder module must be importable without errors
-3. Run `uv sync` at the end to verify dependencies resolve
-4. Run `uv run python -c "from cli.main import app; print('CLI OK')"` to verify CLI import
-5. Run `uv run kg --help` to verify CLI entry point works
-6. Do NOT skip the README — write it properly with real content, not placeholders
-7. After completion, the repo must be in a state where `uv run pytest` runs (even if tests are trivial/skipped)
+1. Replace `core/config.py` with the full implementation above (models + loader + env overrides)
+2. Update `cli/init.py` to call `load_config(auto_create=True)` with Rich console output
+3. Update `cli/main.py` to wire init command to `run_init()`
+4. Update `core/__init__.py` to export config classes
+5. Replace `tests/test_config.py` with the comprehensive test suite
+6. Run `uv run pytest tests/test_config.py -v` and ensure all tests pass
+7. Run `uv run python -c "from core.config import load_config; cfg = load_config(auto_create=False); print(cfg.llm.provider)"` to verify import
+8. Run `uv run kg init --help` to verify CLI integration

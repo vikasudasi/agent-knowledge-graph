@@ -6,6 +6,8 @@ from typing import Annotated
 
 import typer
 
+from cli.init import run_init
+
 app = typer.Typer(
     name="kg",
     help="agent-knowledge-graph — Persistent knowledge for AI agents",
@@ -18,7 +20,7 @@ def init(
     reset: Annotated[bool, typer.Option("--reset", help="Reset Neo4j and re-initialize")] = False,
 ) -> None:
     """Initialize Neo4j and create schema."""
-    typer.echo("[kg] init not yet implemented")
+    run_init(reset=reset)
 
 
 @app.command()
