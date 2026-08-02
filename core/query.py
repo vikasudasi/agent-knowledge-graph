@@ -25,10 +25,10 @@ GUIDELINES:
 - Use MATCH with labels for filtering: MATCH (r:Resource {type: 'person'})
 - For text search: WHERE r.label CONTAINS 'term'
 - For properties stored as JSON: use r.properties_json CONTAINS 'term' for text search
-- For relationships: MATCH (a:Resource {id: $id})-[:RELATES]->(b:Resource)
+- For relationships: MATCH (a:Resource {id: 'entity:example'})-[:RELATES]->(b:Resource)
 - Always RETURN distinct results
 - Limit results to 20 unless the user asks for more
-- Use parameterized queries ($param) for user input"""
+- IMPORTANT: INLINE all values directly in the Cypher string. Do NOT use $param or parameter syntax -- the execution layer does not accept parameters. Put every literal value inline in the query."""
 
 
 @dataclass
