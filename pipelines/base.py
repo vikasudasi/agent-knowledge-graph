@@ -188,7 +188,12 @@ class KnowledgePipeline(ABC, Generic[T]):
 
         # Save checkpoint
         if records and not context.dry_run:
-            last_id = getattr(records[-1], "id", None) or getattr(records[-1], "session_id", None)
+            last_id = None
+            # Prefer _checkpoint_ts from pipeline (used by session.py for message-timestamp cursor)
+            if isinstance(records[-1], dict):
+                last_id = records[-1].get("_checkpoint_ts")
+            if last_id is None:
+                last_id = getattr(records[-1], "id", None) or getattr(records[-1], "session_id", None)
             if last_id is None and isinstance(records[-1], dict):
                 last_id = records[-1].get("id") or records[-1].get("session_id") or records[-1].get("started_at")
             if last_id is None:

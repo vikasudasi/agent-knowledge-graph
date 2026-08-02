@@ -88,17 +88,34 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
                 logger.warning(f"No 'sessions' table in {db_path}")
                 return
 
-            query = "SELECT id, title, started_at FROM sessions"
-            params: dict[str, Any] = {}
+            # Query sessions that have messages newer than checkpoint
+            has_messages_table = "messages" in table_names
+            checkpoint_ts: float | None = None
             if checkpoint and checkpoint.last_processed_id:
-                query += " WHERE started_at > :checkpoint_ts"
-                params["checkpoint_ts"] = float(checkpoint.last_processed_id)
-            query += " ORDER BY started_at ASC"
+                checkpoint_ts = float(checkpoint.last_processed_id)
+
+            if has_messages_table:
+                query = "SELECT DISTINCT s.id, s.title, s.started_at FROM sessions s"
+                params: dict[str, Any] = {}
+                if checkpoint_ts is not None:
+                    query += " WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id AND m.timestamp > :checkpoint_ts)"
+                    params["checkpoint_ts"] = checkpoint_ts
+                else:
+                    query += " WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
+                query += " ORDER BY s.started_at ASC"
+            else:
+                query = "SELECT id, title, started_at FROM sessions"
+                params: dict[str, Any] = {}
+                if checkpoint_ts is not None:
+                    query += " WHERE started_at > :checkpoint_ts"
+                    params["checkpoint_ts"] = checkpoint_ts
+                query += " ORDER BY started_at ASC"
 
             from datetime import datetime, timezone
 
             session_rows = cursor.execute(query, params).fetchall()
             processed = 0
+            global_max_ts: float = 0.0
             for row in session_rows:
                 if context.max_records is not None and processed >= context.max_records:
                     break
@@ -110,17 +127,23 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
                 if isinstance(ts, (int, float)):
                     session["started_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
-                if "messages" in table_names:
+                if has_messages_table:
                     msg_rows = msg_cursor.execute(
-                        "SELECT role, content FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
+                        "SELECT role, content, timestamp FROM messages WHERE session_id = ? ORDER BY timestamp ASC",
                         (session["id"],),
                     ).fetchall()
                     for msg in msg_rows:
                         role = msg["role"] or "user"
                         content = (msg["content"] or "")[:500]
                         messages.append(f"{role}: {content}")
+                        msg_ts = msg["timestamp"]
+                        if isinstance(msg_ts, (int, float)) and msg_ts > global_max_ts:
+                            global_max_ts = msg_ts
 
                 session["messages"] = messages
+                # Attach checkpoint hint for base.py
+                if global_max_ts > 0:
+                    session["_checkpoint_ts"] = global_max_ts
                 yield session
         finally:
             conn.close()
