@@ -253,10 +253,10 @@ class KnowledgePipeline(ABC, Generic[T]):
 class PipelineRegistry:
     """Auto-discovers and manages registered pipelines."""
 
-    _pipelines: dict[str, KnowledgePipeline] = {}
+    _pipelines: dict[str, KnowledgePipeline[Any]] = {}
 
     @classmethod
-    def register(cls, pipeline: KnowledgePipeline) -> None:
+    def register(cls, pipeline: KnowledgePipeline[Any]) -> None:
         """Register a pipeline by name."""
         if pipeline.name in cls._pipelines:
             logger.warning(f"Overwriting existing pipeline: {pipeline.name}")
@@ -264,7 +264,7 @@ class PipelineRegistry:
         logger.debug(f"Registered pipeline: {pipeline.name}")
 
     @classmethod
-    def get(cls, name: str) -> KnowledgePipeline | None:
+    def get(cls, name: str) -> KnowledgePipeline[Any] | None:
         return cls._pipelines.get(name)
 
     @classmethod

@@ -60,7 +60,8 @@ def get_engine() -> QueryEngine:
 TOOLS: list[Tool] = [
     Tool(
         name="kg_query",
-        description="Ask a natural-language question about the knowledge graph — translates to Cypher and returns results",
+        description="Ask a natural-language question about the knowledge graph"
+        " — translates to Cypher and returns results",
         inputSchema={
             "type": "object",
             "properties": {
@@ -112,7 +113,8 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="kg_stats",
-        description="Return statistics about the knowledge graph — node/relationship counts, vector index status, checkpoints",
+        description="Return statistics about the knowledge graph —"
+        " node/relationship counts, vector index status, checkpoints",
         inputSchema={
             "type": "object",
             "properties": {},

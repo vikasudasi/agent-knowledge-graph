@@ -28,7 +28,8 @@ GUIDELINES:
 - For relationships: MATCH (a:Resource {id: 'entity:example'})-[:RELATES]->(b:Resource)
 - Always RETURN distinct results
 - Limit results to 20 unless the user asks for more
-- IMPORTANT: INLINE all values directly in the Cypher string. Do NOT use $param or parameter syntax -- the execution layer does not accept parameters. Put every literal value inline in the query."""
+- IMPORTANT: INLINE all values directly in the Cypher string. Do NOT use $param or parameter syntax.
+|  The execution layer does not accept parameters. Put every literal value inline in the query."""
 
 
 @dataclass

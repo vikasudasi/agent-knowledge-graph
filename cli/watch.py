@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -17,7 +18,7 @@ app = typer.Typer(help="Watch mode — continuously poll sources and ingest")
 console = Console()
 
 
-def _pipeline_map() -> dict:
+def _pipeline_map() -> dict[str, Any]:
     entries = PipelineRegistry.list_pipelines()
     if not entries:
         fallback = SessionIngestPipeline()

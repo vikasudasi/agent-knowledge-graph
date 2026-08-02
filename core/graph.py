@@ -236,7 +236,8 @@ class Neo4jClient:
         type_filter: str | None = None,
     ) -> QueryResult:
         """Run semantic search through Neo4j vector index using SEARCH clause."""
-        cypher = "MATCH (n:Resource)\nSEARCH n IN ( VECTOR INDEX resource_embedding FOR $query_embedding LIMIT $top_k )\nSCORE AS score"
+        cypher = ("MATCH (n:Resource)\nSEARCH n IN ( VECTOR INDEX resource_embedding"
+            " FOR $query_embedding LIMIT $top_k )\nSCORE AS score")
         if type_filter:
             cypher += "\nWHERE n.type = $type_filter"
         cypher += "\nRETURN n, score ORDER BY score DESC"
@@ -338,7 +339,8 @@ class Neo4jClient:
         top_k: int = 10,
     ) -> QueryResult:
         """Run vector search with optional post-filter using SEARCH clause."""
-        cypher = "MATCH (n:Resource)\nSEARCH n IN ( VECTOR INDEX resource_embedding FOR $query_embedding LIMIT $top_k )\nSCORE AS score"
+        cypher = ("MATCH (n:Resource)\nSEARCH n IN ( VECTOR INDEX resource_embedding"
+            " FOR $query_embedding LIMIT $top_k )\nSCORE AS score")
         if cypher_filter:
             cypher += f"\nWHERE {cypher_filter}"
         cypher += "\nWITH n, score ORDER BY score DESC LIMIT $top_k\nRETURN n, score"

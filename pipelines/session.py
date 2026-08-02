@@ -35,10 +35,13 @@ Extract the following in JSON format with EXACTLY this structure:
   "summary": "One paragraph summarizing what happened",
   "topics": ["topic1", "topic2", "topic3"],
   "entities": [
-    {{"name": "EntityName", "type": "person|project|tool|concept|file|task|skill|artifact", "label": "Short human-readable label", "context": "Why this entity is relevant"}}
+    {{"name": "EntityName", "type": "person|project|tool|concept|file|task|skill|artifact",
+      "label": "Short human-readable label", "context": "Why this entity is relevant"}}
   ],
   "relations": [
-    {{"source": "EntityA", "target": "EntityB", "type": "mentions|produces|uses|decides|references|blocks|resolves|assigns", "context": "Evidence from conversation"}}
+    {{"source": "EntityA", "target": "EntityB",
+      "type": "mentions|produces|uses|decides|references|blocks|resolves|assigns",
+      "context": "Evidence from conversation"}}
   ],
   "decisions": ["Decision or conclusion"],
   "tools_used": ["tool/command"],
@@ -98,17 +101,20 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
                 query = "SELECT DISTINCT s.id, s.title, s.started_at FROM sessions s"
                 params: dict[str, Any] = {}
                 if checkpoint_ts is not None:
-                    query += " WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id AND m.timestamp > :checkpoint_ts)"
+                    query += " WHERE EXISTS (SELECT 1 FROM messages m"
+                    query += " WHERE m.session_id = s.id"
+                    query += " AND m.timestamp > :checkpoint_ts)"
                     params["checkpoint_ts"] = checkpoint_ts
                 else:
-                    query += " WHERE EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
+                    query += " WHERE EXISTS ("
+                    query += "SELECT 1 FROM messages m WHERE m.session_id = s.id"
+                    query += ")"
                 query += " ORDER BY s.started_at ASC"
             else:
                 query = "SELECT id, title, started_at FROM sessions"
-                params: dict[str, Any] = {}
+                params = {}
                 if checkpoint_ts is not None:
                     query += " WHERE started_at > :checkpoint_ts"
-                    params["checkpoint_ts"] = checkpoint_ts
                 query += " ORDER BY started_at ASC"
 
             from datetime import datetime, timezone
@@ -125,7 +131,7 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
                 # Convert Unix timestamp to ISO date
                 ts = session.get("started_at")
                 if isinstance(ts, (int, float)):
-                    session["started_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+                    session["started_at"] = datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()  # noqa: UP017
 
                 if has_messages_table:
                     msg_rows = msg_cursor.execute(
@@ -210,7 +216,7 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
             resource = Resource(
                 id=f"entity:{ent_id}",
                 type=ent_type,
-                label=ent_label[:200],
+                label=str(ent_label)[:200],
                 properties={
                     "canonical_name": name,
                     "aliases": ent_data.get("aliases", []),

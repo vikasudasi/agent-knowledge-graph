@@ -101,7 +101,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         model = self._load_model()
         vector = model.encode(text, normalize_embeddings=True).tolist()
         self._validate_dimension(vector)
-        return vector
+        return vector  # type: ignore[no-any-return]
 
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         model = self._load_model()

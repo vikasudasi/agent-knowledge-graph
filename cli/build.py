@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -21,7 +22,10 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
-def _build_context(config: KGConfig, *, dry_run: bool = False, full_rebuild: bool = False, limit: int | None = None) -> PipelineContext:
+def _build_context(
+    config: KGConfig, *, dry_run: bool = False,
+    full_rebuild: bool = False, limit: int | None = None,
+) -> PipelineContext:
     """Build a PipelineContext from config."""
     graph = Neo4jClient(config)
     graph.connect()
@@ -38,7 +42,7 @@ def _build_context(config: KGConfig, *, dry_run: bool = False, full_rebuild: boo
     )
 
 
-def _registered_pipelines() -> list:
+def _registered_pipelines() -> list[Any]:
     """Return pipeline instances, bootstrapping defaults when empty."""
     entries = PipelineRegistry.list_pipelines()
     if entries:

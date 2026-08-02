@@ -62,7 +62,7 @@ def _parse_json_response(text: str) -> dict[str, Any] | list[Any]:
         if text.startswith("json"):
             text = text[4:].strip()
     try:
-        return json.loads(text)
+        return json.loads(text)  # type: ignore[no-any-return]
     except json.JSONDecodeError:
         # Handle double-wrapped JSON: {{...}} — strip one layer
         stripped = text.strip()
@@ -71,7 +71,7 @@ def _parse_json_response(text: str) -> dict[str, Any] | list[Any]:
             inner = stripped[1:-1].strip()
             if inner.startswith("{"):
                 try:
-                    return json.loads(inner)
+                    return json.loads(inner)  # type: ignore[no-any-return]
                 except json.JSONDecodeError:
                     pass
             # Some LLMs wrap in {"response": {...}} or {"content": {...}}
@@ -249,7 +249,7 @@ class OpenRouterProvider(LLMClient):
                 prompt_tokens = _count_tokens(json.dumps(messages), model=model)
                 completion_tokens = _count_tokens(str(content), model=model)
                 logger.debug(f"LLM tokens (estimated): {prompt_tokens} in, {completion_tokens} out")
-            return content.strip()
+            return content.strip()  # type: ignore[no-any-return]
         except (KeyError, IndexError, json.JSONDecodeError) as exc:
             raise LLMInvalidResponseError(f"Unexpected API response format: {exc}") from exc
 
@@ -287,7 +287,7 @@ class OpenRouterProvider(LLMClient):
         try:
             if isinstance(parsed, list):
                 if hasattr(schema, "model_validate"):
-                    return [schema.model_validate(item) for item in parsed]
+                    return [schema.model_validate(item) for item in parsed]  # type: ignore[return-value]
             return schema.model_validate(parsed)
         except ValidationError as exc:
             raise LLMInvalidResponseError(
