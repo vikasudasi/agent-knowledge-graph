@@ -143,7 +143,7 @@ class TestRelationshipCRUD:
 class TestQuery:
     def test_vector_search(self, client):
         mock_session = client._driver.session.return_value.__enter__.return_value
-        mock_session.run.return_value = [{"node": {"id": "r1", "type": "entity", "label": "Test"}, "score": 0.95}]
+        mock_session.run.return_value = [{"n": {"id": "r1", "type": "entity", "label": "Test"}, "score": 0.95}]
         result = client.vector_search([0.1, 0.2, 0.3], top_k=5)
         assert len(result.nodes) == 1
         assert result.nodes[0].id == "r1"

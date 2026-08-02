@@ -235,13 +235,11 @@ class Neo4jClient:
         top_k: int = 10,
         type_filter: str | None = None,
     ) -> QueryResult:
-        """Run semantic search through Neo4j vector index."""
-        cypher = "CALL db.index.vector.queryNodes('resource_embedding', $top_k, $query_embedding)"
+        """Run semantic search through Neo4j vector index using SEARCH clause."""
+        cypher = "MATCH (n:Resource)\nSEARCH n IN ( VECTOR INDEX resource_embedding FOR $query_embedding LIMIT $top_k )\nSCORE AS score"
         if type_filter:
-            cypher += " YIELD node, score WHERE node.type = $type_filter"
-        else:
-            cypher += " YIELD node, score"
-        cypher += " RETURN node, score ORDER BY score DESC"
+            cypher += "\nWHERE n.type = $type_filter"
+        cypher += "\nRETURN n, score ORDER BY score DESC"
 
         params: dict[str, Any] = {"top_k": top_k, "query_embedding": query_embedding}
         if type_filter:
@@ -252,7 +250,7 @@ class Neo4jClient:
         scores: list[float] = []
         with self.driver.session(database=self._config.neo4j.database) as session:
             for record in session.run(cypher, params):
-                node = record["node"]
+                node = record["n"]
                 resources.append(
                     Resource(
                         id=node.get("id", ""),
@@ -277,12 +275,20 @@ class Neo4jClient:
         if direction not in {"both", "incoming", "outgoing"}:
             direction = "both"
 
+        # Neo4j does not allow parameters in the variable-length relationship
+        # quantifier ([*1..$hops] is rejected) — the depth must be a literal.
+        try:
+            hops = int(hops)
+        except (TypeError, ValueError):
+            hops = 1
+        hops = max(1, min(hops, 10))  # guard against unbounded deep traversals
+
         if direction == "outgoing":
-            pattern = "-[r:RELATES*1..$hops]->"
+            pattern = f"-[r:RELATES*1..{hops}]->"
         elif direction == "incoming":
-            pattern = "<-[r:RELATES*1..$hops]-"
+            pattern = f"<-[r:RELATES*1..{hops}]-"
         else:
-            pattern = "-[r:RELATES*1..$hops]-"
+            pattern = f"-[r:RELATES*1..{hops}]-"
 
         cypher = (
             "MATCH path = (start:Resource {id: $start_id})"
@@ -295,7 +301,7 @@ class Neo4jClient:
         seen_rels: list[Relationship] = []
 
         with self.driver.session(database=self._config.neo4j.database) as session:
-            for record in session.run(cypher, {"start_id": start_id, "hops": hops}):
+            for record in session.run(cypher, {"start_id": start_id}):
                 for node in record["nodes"]:
                     node_id = node.get("id", "")
                     if node_id and node_id not in seen_nodes:
@@ -331,24 +337,18 @@ class Neo4jClient:
         cypher_filter: str = "",
         top_k: int = 10,
     ) -> QueryResult:
-        """Run vector search with optional post-filter."""
-        cypher = """
-        CALL db.index.vector.queryNodes('resource_embedding', $top_k * 3, $query_embedding)
-        YIELD node, score
-        """
+        """Run vector search with optional post-filter using SEARCH clause."""
+        cypher = "MATCH (n:Resource)\nSEARCH n IN ( VECTOR INDEX resource_embedding FOR $query_embedding LIMIT $top_k )\nSCORE AS score"
         if cypher_filter:
-            cypher += f" WHERE {cypher_filter}"
-        cypher += """
-        WITH node, score ORDER BY score DESC LIMIT $top_k
-        RETURN node, score
-        """
+            cypher += f"\nWHERE {cypher_filter}"
+        cypher += "\nWITH n, score ORDER BY score DESC LIMIT $top_k\nRETURN n, score"
 
         t0 = time.monotonic()
         resources: list[Resource] = []
         scores: list[float] = []
         with self.driver.session(database=self._config.neo4j.database) as session:
             for record in session.run(cypher, {"query_embedding": query_embedding, "top_k": top_k}):
-                node = record["node"]
+                node = record["n"]
                 resources.append(
                     Resource(
                         id=node.get("id", ""),
@@ -381,7 +381,9 @@ class Neo4jClient:
                 stats.relationship_count = int(rel_count["count"])
 
             for record in session.run("SHOW INDEXES WHERE name = 'resource_embedding'"):
-                stats.vector_index_ready = record.get("state") == "online"
+                # Neo4j returns the index state uppercase ("ONLINE") — compare
+                # case-insensitively so a healthy index isn't reported as false.
+                stats.vector_index_ready = str(record.get("state", "")).lower() == "online"
 
             for record in session.run("MATCH (c:PipelineCheckpoint) RETURN c"):
                 node = record["c"]
