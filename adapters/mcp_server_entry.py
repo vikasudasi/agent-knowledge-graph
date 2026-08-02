@@ -141,9 +141,7 @@ async def handle_call_tool(ctx, req: mcp_types.CallToolRequestParams) -> CallToo
                 "execution_time_ms": result.execution_time_ms or 0,
             }
         elif name == "kg_semantic_search":
-            result = get_engine().semantic(
-                args["query"], top_k=int(args.get("top_k", 5))
-            )
+            result = get_engine().semantic(args["query"], top_k=int(args.get("top_k", 5)))
             data = {
                 "query": args["query"],
                 "results": [
@@ -158,18 +156,12 @@ async def handle_call_tool(ctx, req: mcp_types.CallToolRequestParams) -> CallToo
                 "execution_time_ms": result.execution_time_ms or 0,
             }
         elif name == "kg_traverse":
-            result = get_engine().traverse(
-                args["start_id"], hops=int(args.get("hops", 1))
-            )
+            result = get_engine().traverse(args["start_id"], hops=int(args.get("hops", 1)))
             data = {
                 "start_id": args["start_id"],
-                "nodes": [
-                    {"id": node.id, "type": node.type, "label": node.label}
-                    for node in result.nodes
-                ],
+                "nodes": [{"id": node.id, "type": node.type, "label": node.label} for node in result.nodes],
                 "relationships": [
-                    {"source": rel.source_id, "target": rel.target_id, "type": rel.type}
-                    for rel in result.relationships
+                    {"source": rel.source_id, "target": rel.target_id, "type": rel.type} for rel in result.relationships
                 ],
                 "execution_time_ms": result.execution_time_ms or 0,
             }
@@ -199,9 +191,7 @@ async def handle_call_tool(ctx, req: mcp_types.CallToolRequestParams) -> CallToo
                 isError=True,
             )
 
-        return CallToolResult(
-            content=[TextContent(type="text", text=json.dumps(data, indent=2))]
-        )
+        return CallToolResult(content=[TextContent(type="text", text=json.dumps(data, indent=2))])
     except Exception as exc:
         return CallToolResult(
             content=[TextContent(type="text", text=f"Error: {exc}")],
@@ -216,9 +206,7 @@ async def main() -> None:
     from mcp import stdio_server
 
     # Register request handlers via constructor (SDK default routing)
-    async def list_tools(
-        ctx, req: mcp_types.PaginatedRequestParams | None
-    ) -> mcp_types.ListToolsResult:
+    async def list_tools(ctx, req: mcp_types.PaginatedRequestParams | None) -> mcp_types.ListToolsResult:
         return mcp_types.ListToolsResult(tools=TOOLS)
 
     server = Server(

@@ -23,8 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 def _build_context(
-    config: KGConfig, *, dry_run: bool = False,
-    full_rebuild: bool = False, limit: int | None = None,
+    config: KGConfig,
+    *,
+    dry_run: bool = False,
+    full_rebuild: bool = False,
+    limit: int | None = None,
 ) -> PipelineContext:
     """Build a PipelineContext from config."""
     graph = Neo4jClient(config)
