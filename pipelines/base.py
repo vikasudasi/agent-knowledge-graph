@@ -187,8 +187,12 @@ class KnowledgePipeline(ABC, Generic[T]):
             result.resources_created = len(embedded)
 
         # Save checkpoint
-        if records and not context.dry_run and not full_rebuild:
-            last_id = getattr(records[-1], "id", None) or getattr(records[-1], "session_id", str(total))
+        if records and not context.dry_run:
+            last_id = getattr(records[-1], "id", None) or getattr(records[-1], "session_id", None)
+            if last_id is None and isinstance(records[-1], dict):
+                last_id = records[-1].get("id") or records[-1].get("session_id") or records[-1].get("started_at")
+            if last_id is None:
+                last_id = str(total)
             new_checkpoint = PipelineCheckpoint(
                 pipeline_name=self._name,
                 last_processed_id=str(last_id),

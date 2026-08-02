@@ -91,9 +91,9 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
             query = "SELECT id, title, started_at FROM sessions"
             params: dict[str, Any] = {}
             if checkpoint and checkpoint.last_processed_id:
-                query += " WHERE id > :checkpoint_id"
-                params["checkpoint_id"] = checkpoint.last_processed_id
-            query += " ORDER BY id ASC"
+                query += " WHERE started_at > :checkpoint_ts"
+                params["checkpoint_ts"] = float(checkpoint.last_processed_id)
+            query += " ORDER BY started_at ASC"
 
             from datetime import datetime, timezone
 
