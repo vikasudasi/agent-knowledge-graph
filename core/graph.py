@@ -318,10 +318,16 @@ class Neo4jClient:
                     rel_type = rel.get("type")
                     if rel_types and rel_type not in rel_types:
                         continue
+                    # Neo4j Relationship objects expose their endpoints via
+                    # start_node / end_node (Graph node objects), NOT via
+                    # source_id/target_id properties. Fall back to properties
+                    # for mocked/dict-like records.
+                    start_node = getattr(rel, "start_node", None)
+                    end_node = getattr(rel, "end_node", None)
                     seen_rels.append(
                         Relationship(
-                            source_id=rel.get("source_id", ""),
-                            target_id=rel.get("target_id", ""),
+                            source_id=start_node.get("id", "") if start_node is not None else rel.get("source_id", ""),
+                            target_id=end_node.get("id", "") if end_node is not None else rel.get("target_id", ""),
                             type=rel_type or "RELATES",
                             properties=self._extract_properties(rel),
                         )
@@ -368,11 +374,60 @@ class Neo4jClient:
         elapsed = (time.monotonic() - t0) * 1000
         return QueryResult(nodes=resources, scores=scores, execution_time_ms=elapsed)
 
+    @staticmethod
+    def _node_to_dict(node: Any) -> dict[str, Any]:
+        """Convert a Neo4j Node to a plain JSON-serializable dict."""
+        return {
+            "id": node.get("id", ""),
+            "type": node.get("type", "unknown"),
+            "label": node.get("label", ""),
+            "properties": Neo4jClient._extract_properties(node),
+        }
+
+    @staticmethod
+    def _relationship_to_dict(rel: Any) -> dict[str, Any]:
+        """Convert a Neo4j Relationship to a plain JSON-serializable dict."""
+        start_node = getattr(rel, "start_node", None)
+        end_node = getattr(rel, "end_node", None)
+        return {
+            "source_id": start_node.get("id", "") if start_node is not None else rel.get("source_id", ""),
+            "target_id": end_node.get("id", "") if end_node is not None else rel.get("target_id", ""),
+            "type": rel.get("type", "RELATES"),
+            "properties": Neo4jClient._extract_properties(rel),
+        }
+
+    @classmethod
+    def _serialize_value(cls, value: Any) -> Any:
+        """Recursively convert Neo4j types to JSON-serializable Python values.
+
+        Handles Node, Relationship, Path, lists, tuples, and dicts so that the
+        MCP layer (which json.dumps the result) never receives a raw GraphObject.
+        """
+        from neo4j.graph import Node, Path, Relationship
+
+        if isinstance(value, Node):
+            return cls._node_to_dict(value)
+        if isinstance(value, Relationship):
+            return cls._relationship_to_dict(value)
+        if isinstance(value, Path):
+            # A path is a sequence of alternating nodes and relationships.
+            return [cls._serialize_value(item) for item in value if isinstance(item, (Node, Relationship))]
+        if isinstance(value, (list, tuple)):
+            return [cls._serialize_value(item) for item in value]
+        if isinstance(value, dict):
+            return {key: cls._serialize_value(item) for key, item in value.items()}
+        return value
+
     def run_cypher(self, cypher: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        """Execute raw Cypher and return row dicts."""
+        """Execute raw Cypher and return row dicts.
+
+        Values that are Neo4j Graph objects (Node, Relationship, Path) are
+        converted to plain JSON-serializable dicts so downstream callers can
+        safely json.dumps the result (e.g. the MCP server entrypoint).
+        """
         with self.driver.session(database=self._config.neo4j.database) as session:
             result = session.run(cypher, params or {})
-            return [dict(record) for record in result]
+            return [{key: self._serialize_value(value) for key, value in record.items()} for record in result]
 
     def get_stats(self) -> GraphStats:
         """Return node/relationship counts, vector-index state, and checkpoints."""
