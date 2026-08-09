@@ -125,56 +125,70 @@ class KnowledgePipeline(ABC, Generic[T]):
             logger.info(f"Pipeline '{self._name}': no new records, done in {elapsed:.2f}s")
             return result
 
-        # Phase 2: Resolve
-        resolved = []
+        # Process each record incrementally: resolve -> embed -> write -> advance checkpoint.
+        # This commits work per-record so an interrupted run retains completed sessions and
+        # the graph grows progressively instead of all-or-nothing at the end.
+        all_embedded: list[Resource] = []
         for i, record in enumerate(records):
+            if progress_callback:
+                progress_callback(i, total, "resolving")
             try:
                 resolved_resources = self.resolve(context, record)
-                resolved.extend(resolved_resources)
             except Exception as e:
                 logger.error(f"Error resolving record {i}: {e}")
                 result.errors += 1
+                continue
+
+            # Embed this record's resources
+            embedded_record: list[Resource] = []
+            for resource in resolved_resources:
+                try:
+                    if resource.embedding is None:
+                        resource.embedding = context.embedder.embed(resource.label + " " + str(resource.properties))
+                    embedded_record.append(resource)
+                except Exception as e:
+                    logger.error(f"Error embedding resource {resource.id}: {e}")
+                    result.errors += 1
+            all_embedded.extend(embedded_record)
+
+            # Write this record's resources to Neo4j
+            if not context.dry_run:
+                for resource in embedded_record:
+                    try:
+                        context.graph.upsert_resource(resource)
+                        result.resources_created += 1
+                    except Exception as e:
+                        logger.error(f"Error writing resource {resource.id}: {e}")
+                        result.errors += 1
+            else:
+                result.resources_created += len(embedded_record)
+
+            # Advance the checkpoint past this record so a later interrupted run resumes here.
+            if not context.dry_run and embedded_record:
+                last_id = self._record_checkpoint_id(records, i)
+                new_checkpoint = PipelineCheckpoint(
+                    pipeline_name=self._name,
+                    last_processed_id=str(last_id),
+                    total_processed=(checkpoint.total_processed if checkpoint else 0) + (i + 1),
+                    updated_at=datetime.now(UTC),
+                )
+                context.graph.save_checkpoint(new_checkpoint)
+                result.checkpoint = new_checkpoint
+
             if progress_callback:
                 progress_callback(i + 1, total, "resolving")
 
-        result.records_processed = total
-        if not resolved:
+        if not all_embedded:
             elapsed = time.monotonic() - t0
             result.duration_seconds = elapsed
             logger.info(f"Pipeline '{self._name}': no resources resolved, done in {elapsed:.2f}s")
             return result
 
-        # Phase 3: Embed
+        # Write relationships across all processed resources.
         if progress_callback:
-            progress_callback(0, len(resolved), "embedding")
-        embedded = []
-        for i, resource in enumerate(resolved):
-            try:
-                if resource.embedding is None:
-                    resource.embedding = context.embedder.embed(resource.label + " " + str(resource.properties))
-                embedded.append(resource)
-            except Exception as e:
-                logger.error(f"Error embedding resource {resource.id}: {e}")
-                result.errors += 1
-            if progress_callback:
-                progress_callback(i + 1, len(resolved), "embedding")
-
-        # Phase 4: Write
-        if progress_callback:
-            progress_callback(0, len(embedded), "writing")
+            progress_callback(0, len(all_embedded), "writing")
         if not context.dry_run:
-            for i, resource in enumerate(embedded):
-                try:
-                    context.graph.upsert_resource(resource)
-                    result.resources_created += 1
-                except Exception as e:
-                    logger.error(f"Error writing resource {resource.id}: {e}")
-                    result.errors += 1
-                if progress_callback:
-                    progress_callback(i + 1, len(embedded), "writing")
-
-            # Also upsert relationships if the pipeline generates them
-            relationships = self.get_relationships(context, records, embedded)
+            relationships = self.get_relationships(context, records, all_embedded)
             for rel in relationships:
                 try:
                     context.graph.upsert_relationship(rel)
@@ -183,29 +197,7 @@ class KnowledgePipeline(ABC, Generic[T]):
                     logger.error(f"Error writing relationship {rel.source_id}->{rel.target_id}: {e}")
                     result.errors += 1
         else:
-            logger.info(f"Dry-run: would upsert {len(embedded)} resources")
-            result.resources_created = len(embedded)
-
-        # Save checkpoint
-        if records and not context.dry_run:
-            last_id = None
-            # Prefer _checkpoint_ts from pipeline (used by session.py for message-timestamp cursor)
-            if isinstance(records[-1], dict):
-                last_id = records[-1].get("_checkpoint_ts")
-            if last_id is None:
-                last_id = getattr(records[-1], "id", None) or getattr(records[-1], "session_id", None)
-            if last_id is None and isinstance(records[-1], dict):
-                last_id = records[-1].get("id") or records[-1].get("session_id") or records[-1].get("started_at")
-            if last_id is None:
-                last_id = str(total)
-            new_checkpoint = PipelineCheckpoint(
-                pipeline_name=self._name,
-                last_processed_id=str(last_id),
-                total_processed=(checkpoint.total_processed if checkpoint else 0) + total,
-                updated_at=datetime.now(UTC),
-            )
-            context.graph.save_checkpoint(new_checkpoint)
-            result.checkpoint = new_checkpoint
+            logger.info(f"Dry-run: would upsert {len(all_embedded)} resources")
 
         elapsed = time.monotonic() - t0
         result.duration_seconds = elapsed
@@ -215,6 +207,20 @@ class KnowledgePipeline(ABC, Generic[T]):
             f"{result.errors} errors"
         )
         return result
+
+    def _record_checkpoint_id(self, records: list[Any], index: int) -> str:
+        """Derive a stable checkpoint cursor id for a given record position.
+
+        Prefers the pipeline-provided message-timestamp hint (used by session.py for
+        incremental resume), falling back to the record's own id/session_id/started_at.
+        """
+        record = records[index]
+        if isinstance(record, dict):
+            checkpoint_ts = record.get("_checkpoint_ts")
+            if checkpoint_ts is not None:
+                return str(checkpoint_ts)
+            return str(record.get("id") or record.get("session_id") or record.get("started_at") or str(index))
+        return str(getattr(record, "id", None) or getattr(record, "session_id", None) or str(index))
 
     # ── Pipeline lifecycle (override in subclasses) ────────────────
 

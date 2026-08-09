@@ -6,6 +6,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Generator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -154,19 +155,20 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
         finally:
             conn.close()
 
-    def resolve(self, context: PipelineContext, record: dict[str, Any]) -> list[Resource]:
-        """Extract knowledge from session via LLM, then convert to Resource nodes."""
-        title = record.get("title", "Untitled Session")
-        started_at = record.get("started_at", "unknown")
-        messages_text = "\n".join(record.get("messages", ["(no messages)"]))
-        session_id = str(record["id"])
-
+    def _extract_chunk(
+        self,
+        context: PipelineContext,
+        session_id: str,
+        title: str,
+        started_at: str,
+        messages: list[str],
+    ) -> ExtractedKnowledge | None:
+        """Run LLM extraction for a single chunk of messages. Returns None on failure."""
         prompt = EXTRACTION_PROMPT.format(
             title=title,
             started_at=started_at,
-            messages=messages_text,
+            messages="\n".join(messages),
         )
-
         try:
             extracted = context.llm.extract_structured(
                 messages=[{"role": "user", "content": prompt}],
@@ -174,9 +176,97 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
                 system_prompt="You are a knowledge graph extraction assistant. Output ONLY valid JSON.",
                 model=context.config.llm.extraction_model,
             )
-            extracted_data = extracted.model_dump() if hasattr(extracted, "model_dump") else {}
+            return extracted if isinstance(extracted, ExtractedKnowledge) else None
         except Exception as exc:
             logger.warning(f"LLM extraction failed for session {session_id}: {exc}")
+            return None
+
+    @staticmethod
+    def _merge_extractions(results: list[ExtractedKnowledge]) -> ExtractedKnowledge:
+        """Merge multiple chunk extraction results, deduplicating entities, relations, and lists."""
+        merged = ExtractedKnowledge(session_id=results[0].session_id if results else "")
+        entity_map: dict[str, Any] = {}
+        relation_keys: set[tuple[str, str, str]] = set()
+        topics: list[str] = []
+        decisions: list[str] = []
+        tools: list[str] = []
+        summaries: list[str] = []
+        outcomes: list[str] = []
+
+        for r in results:
+            if r is None:
+                continue
+            if r.summary:
+                summaries.append(r.summary)
+            for t in r.topics:
+                if t not in topics:
+                    topics.append(t)
+            for d in r.decisions:
+                if d not in decisions:
+                    decisions.append(d)
+            for tool in r.tools_used:
+                if tool not in tools:
+                    tools.append(tool)
+            if r.outcome:
+                outcomes.append(r.outcome)
+            for ent in r.entities:
+                key = (ent.name or "").lower()
+                if key not in entity_map:
+                    entity_map[key] = ent
+            for rel in r.relations:
+                rel_key = (rel.source, rel.target, rel.type)
+                if rel_key not in relation_keys:
+                    relation_keys.add(rel_key)
+                    merged.relations.append(rel)
+            if not merged.session_id:
+                merged.session_id = r.session_id
+
+        merged.entities = list(entity_map.values())
+        merged.topics = topics
+        merged.decisions = decisions
+        merged.tools_used = tools
+        merged.summary = " ".join(s for s in summaries if s)[:500] if summaries else ""
+        merged.outcome = outcomes[0] if outcomes else "in_progress"
+        return merged
+
+    def resolve(self, context: PipelineContext, record: dict[str, Any]) -> list[Resource]:
+        """Extract knowledge from session via LLM (batched + concurrent), then convert to Resource nodes."""
+        title = record.get("title", "Untitled Session")
+        started_at = record.get("started_at", "unknown")
+        session_id = str(record["id"])
+        messages = record.get("messages", []) or ["(no messages)"]
+
+        batch_size = 20
+        max_workers = 4
+        try:
+            batch_size = int(context.config.pipelines.session_ingest_batch_size)
+        except Exception:
+            pass
+        try:
+            max_workers = int(context.config.pipelines.session_ingest_max_workers)
+        except Exception:
+            pass
+
+        # Split the session's messages into chunks of `batch_size`.
+        chunks = [messages[i : i + batch_size] for i in range(0, len(messages), batch_size)]
+
+        if len(chunks) == 1:
+            results: list[ExtractedKnowledge | None] = [
+                self._extract_chunk(context, session_id, title, started_at, chunks[0])
+            ]
+        else:
+            with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+                results = list(
+                    executor.map(
+                        lambda c: self._extract_chunk(context, session_id, title, started_at, c),
+                        chunks,
+                    )
+                )
+
+        successful = [r for r in results if r is not None]
+        if successful:
+            extracted_data = self._merge_extractions(successful).model_dump()
+        else:
             extracted_data = {
                 "session_id": session_id,
                 "summary": title,

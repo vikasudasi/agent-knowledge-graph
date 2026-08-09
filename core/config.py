@@ -49,7 +49,7 @@ class Neo4jConfig(BaseModel):
 class PipelineConfig(BaseModel):
     """Pipeline-specific configuration."""
 
-    session_ingest_batch_size: int = 10
+    session_ingest_batch_size: int = 20
     session_ingest_max_workers: int = 4
     dry_run: bool = False
 

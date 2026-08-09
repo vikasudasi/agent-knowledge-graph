@@ -54,8 +54,10 @@ def _count_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
         return len(text) // 4
 
 
-def _parse_json_response(text: str) -> dict[str, Any] | list[Any]:
+def _parse_json_response(text: str | None) -> dict[str, Any] | list[Any]:
     """Parse JSON from response text. Handles markdown code fences and double-wrapped JSON."""
+    if not text or not text.strip():
+        raise json.JSONDecodeError("Empty LLM response", "", 0)
     text = text.strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -276,6 +278,10 @@ class OpenRouterProvider(LLMClient):
         try:
             data = response.json()
             raw_text = data["choices"][0]["message"]["content"]
+            if raw_text is None:
+                raise LLMInvalidResponseError(
+                    "LLM returned empty content (possible content filter) — treating as extraction failure"
+                )
         except (KeyError, IndexError, json.JSONDecodeError) as exc:
             raise LLMInvalidResponseError(f"Unexpected API response format: {exc}") from exc
 

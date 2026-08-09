@@ -107,3 +107,91 @@ class TestSessionIngestPipeline:
         mock_context.metadata = {}
         records = list(pipeline.extract(mock_context, None))
         assert records == []
+
+    def test_resolve_batches_large_sessions(self, pipeline: SessionIngestPipeline) -> None:
+        """Sessions with > batch-size messages should trigger multiple LLM calls and merge."""
+        mock_context = MagicMock()
+        mock_llm = MagicMock()
+        mock_llm.extract_structured.side_effect = [
+            ExtractedKnowledge(
+                summary="chunk1",
+                topics=["AI"],
+                entities=[ExtractedEntity(name="Neo4j", type="tool", label="Neo4j")],
+                relations=[ExtractedRelation(source="Hermes", target="Neo4j", type="uses")],
+            ),
+            ExtractedKnowledge(
+                summary="chunk2",
+                topics=["AI", "ML"],
+                entities=[ExtractedEntity(name="PyTorch", type="tool", label="PyTorch")],
+                relations=[ExtractedRelation(source="Hermes", target="PyTorch", type="uses")],
+            ),
+        ]
+        mock_context.llm = mock_llm
+        mock_context.config.llm.extraction_model = "test-model"
+        mock_context.config.pipelines.session_ingest_batch_size = 2
+        mock_context.config.pipelines.session_ingest_max_workers = 2
+
+        record = {
+            "id": "sess-big",
+            "title": "Big Session",
+            "started_at": "2024-01-01",
+            "messages": [f"user: m{i}" for i in range(4)],  # 4 msgs -> 2 chunks
+        }
+        resources = pipeline.resolve(mock_context, record)
+
+        assert mock_llm.extract_structured.call_count == 2
+        # session + 2 entities
+        assert len(resources) == 3
+        types = sorted(r.type for r in resources)
+        assert types == ["session", "tool", "tool"]
+        # merged topics deduped
+        session = next(r for r in resources if r.type == "session")
+        assert session.properties["topics"] == ["AI", "ML"]
+        assert session.properties["message_count"] == 4
+
+    def test_resolve_partial_chunk_failure_keeps_successes(self, pipeline: SessionIngestPipeline) -> None:
+        """If one chunk fails, successful chunks are still merged."""
+        mock_context = MagicMock()
+        mock_llm = MagicMock()
+        mock_llm.extract_structured.side_effect = [
+            ExtractedKnowledge(
+                summary="ok",
+                entities=[ExtractedEntity(name="Vik", type="person", label="Vik")],
+            ),
+            Exception("LLM error"),
+        ]
+        mock_context.llm = mock_llm
+        mock_context.config.llm.extraction_model = "test-model"
+        mock_context.config.pipelines.session_ingest_batch_size = 2
+        mock_context.config.pipelines.session_ingest_max_workers = 2
+
+        record = {
+            "id": "sess-partial",
+            "title": "Partial",
+            "messages": [f"user: m{i}" for i in range(4)],
+        }
+        resources = pipeline.resolve(mock_context, record)
+
+        assert len(resources) == 2  # session + 1 entity from the successful chunk
+        entity = next(r for r in resources if r.type != "session")
+        assert entity.label == "Vik"
+
+    def test_merge_extractions_dedupes(self, pipeline: SessionIngestPipeline) -> None:
+        """Duplicate entities/relations across chunks are deduplicated on merge."""
+        a = ExtractedKnowledge(
+            summary="s1",
+            entities=[ExtractedEntity(name="Hermes", type="tool")],
+            relations=[ExtractedRelation(source="A", target="B", type="uses")],
+            topics=["x"],
+        )
+        b = ExtractedKnowledge(
+            summary="s2",
+            entities=[ExtractedEntity(name="Hermes", type="tool")],  # duplicate
+            relations=[ExtractedRelation(source="A", target="B", type="uses")],  # duplicate
+            topics=["x", "y"],
+        )
+        merged = pipeline._merge_extractions([a, b])
+        assert len(merged.entities) == 1
+        assert len(merged.relations) == 1
+        assert merged.topics == ["x", "y"]
+        assert "s1" in merged.summary and "s2" in merged.summary
