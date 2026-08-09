@@ -427,7 +427,10 @@ class Neo4jClient:
         """
         with self.driver.session(database=self._config.neo4j.database) as session:
             result = session.run(cypher, params or {})
-            return [{key: self._serialize_value(value) for key, value in record.items()} for record in result]
+            return [
+                {key: self._serialize_value(value) for key, value in record.items()}  # type: ignore[no-untyped-call]
+                for record in result
+            ]
 
     def get_stats(self) -> GraphStats:
         """Return node/relationship counts, vector-index state, and checkpoints."""
