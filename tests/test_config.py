@@ -17,7 +17,7 @@ class TestConfigDefaults:
     def test_default_llm_provider(self) -> None:
         cfg = KGConfig()
         assert cfg.llm.provider == "openrouter"
-        assert cfg.llm.default_model == "deepseek/deepseek-v4-flash-0731"
+        assert cfg.llm.default_model == "deepseek/deepseek-v4-pro"
 
     def test_default_embedding(self) -> None:
         cfg = KGConfig()
@@ -105,4 +105,4 @@ class TestConfigFile:
             yaml.dump({}, file)
 
         cfg = load_config(config_path=config_path, auto_create=False)
-        assert cfg.llm.default_model == "deepseek/deepseek-v4-flash-0731"
+        assert cfg.llm.default_model == "deepseek/deepseek-v4-pro"

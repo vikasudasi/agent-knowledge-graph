@@ -16,9 +16,9 @@ class LLMConfig(BaseModel):
     provider: str = "openrouter"
     api_key: str = ""
     base_url: str = "https://openrouter.ai/api/v1"
-    default_model: str = "deepseek/deepseek-v4-flash-0731"
-    extraction_model: str = "deepseek/deepseek-v4-flash-0731"
-    query_model: str = "deepseek/deepseek-v4-flash-0731"
+    default_model: str = "deepseek/deepseek-v4-pro"
+    extraction_model: str = "deepseek/deepseek-v4-pro"
+    query_model: str = "deepseek/deepseek-v4-pro"
     max_retries: int = 3
     timeout: int = 60
 
