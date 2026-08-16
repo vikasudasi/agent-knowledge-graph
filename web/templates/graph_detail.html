@@ -1,0 +1,285 @@
+{% extends "base.html" %}
+{% block title %}{{ graph.name }} — agent-knowledge-graph{% endblock %}
+{% block content %}
+<section class="page-header">
+  <div>
+    <h1>{{ graph.name }}</h1>
+    {% if graph.description %}<p class="muted">{{ graph.description }}</p>{% endif %}
+  </div>
+  <a class="button secondary" href="/graphs">Back to graphs</a>
+</section>
+
+<section class="graph-summary">
+  <div class="summary-card">
+    <span class="summary-label">Nodes</span>
+    <span class="summary-value">{{ node_count }}</span>
+  </div>
+  <div class="summary-card">
+    <span class="summary-label">Relationships</span>
+    <span class="summary-value">{{ relationship_count }}</span>
+  </div>
+  <div class="summary-card">
+    <span class="summary-label">Created</span>
+    <span class="summary-value">{{ graph.created_at[:10] }}</span>
+  </div>
+</section>
+
+<section class="graph-viz-section">
+  <h2>Graph visualization</h2>
+  <p class="muted">Showing up to {{ viz_limit }} nodes. Click a node in the table below to inspect relationships.</p>
+  <div id="graph-viz" class="graph-viz"></div>
+</section>
+
+<section class="node-explorer">
+  <h2>Nodes</h2>
+  <div class="table-scroll">
+    <table class="data-table" id="nodes-table">
+      <thead>
+        <tr>
+          <th>Label</th>
+          <th>Type</th>
+          <th>Properties</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody id="nodes-body">
+        <tr><td colspan="4" class="muted">Loading nodes…</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="pagination" id="nodes-pagination">
+    <button type="button" class="button secondary" id="nodes-prev" disabled>Previous</button>
+    <span id="nodes-page-info" class="muted"></span>
+    <button type="button" class="button secondary" id="nodes-next" disabled>Next</button>
+  </div>
+</section>
+
+<section class="node-detail" id="node-detail" hidden>
+  <h2>Selected node</h2>
+  <div id="node-detail-content"></div>
+  <h3>Relationships</h3>
+  <div class="table-scroll">
+    <table class="data-table" id="rels-table">
+      <thead>
+        <tr>
+          <th>Source</th>
+          <th>Type</th>
+          <th>Target</th>
+          <th>Properties</th>
+        </tr>
+      </thead>
+      <tbody id="rels-body"></tbody>
+    </table>
+  </div>
+  <h3>Neighbors</h3>
+  <div class="table-scroll">
+    <table class="data-table" id="neighbors-table">
+      <thead>
+        <tr>
+          <th>Label</th>
+          <th>Type</th>
+          <th>Properties</th>
+        </tr>
+      </thead>
+      <tbody id="neighbors-body"></tbody>
+    </table>
+  </div>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script>
+(function () {
+  const graphId = {{ graph.id | tojson }};
+  const pageSize = {{ page_size }};
+  const vizData = {{ viz_data_json | safe }};
+  let currentOffset = 0;
+  let totalNodes = 0;
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function formatProperties(props) {
+    if (!props || Object.keys(props).length === 0) return '—';
+    return escapeHtml(JSON.stringify(props));
+  }
+
+  async function loadNodes() {
+    const res = await fetch(`/graphs/${graphId}/api/nodes?offset=${currentOffset}&limit=${pageSize}`);
+    const data = await res.json();
+    const tbody = document.getElementById('nodes-body');
+    tbody.innerHTML = '';
+    if (!data.nodes || data.nodes.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="muted">No nodes in this graph yet.</td></tr>';
+    } else {
+      data.nodes.forEach(function (node) {
+        const tr = document.createElement('tr');
+        tr.className = 'node-row';
+        tr.dataset.nodeId = node.id;
+        tr.innerHTML = `
+          <td><button type="button" class="link-button node-link">${escapeHtml(node.label || node.id)}</button></td>
+          <td>${escapeHtml(node.type || '')}</td>
+          <td><code>${formatProperties(node.properties)}</code></td>
+          <td>${escapeHtml((node.created_at || '').slice(0, 10))}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+    totalNodes = data.total || 0;
+    document.getElementById('nodes-prev').disabled = currentOffset === 0;
+    document.getElementById('nodes-next').disabled = !data.has_more;
+    const page = Math.floor(currentOffset / pageSize) + 1;
+    const totalPages = Math.max(1, Math.ceil(totalNodes / pageSize));
+    document.getElementById('nodes-page-info').textContent = `Page ${page} of ${totalPages} (${totalNodes} nodes)`;
+  }
+
+  async function loadNeighbors(nodeId) {
+    const res = await fetch(`/graphs/${graphId}/api/neighbors/${encodeURIComponent(nodeId)}`);
+    const data = await res.json();
+    const detail = document.getElementById('node-detail');
+    detail.hidden = false;
+    document.getElementById('node-detail-content').innerHTML = `
+      <p><strong>${escapeHtml(data.node.label || data.node.id)}</strong> <span class="muted">(${escapeHtml(data.node.type || '')})</span></p>
+      <p><code>${formatProperties(data.node.properties)}</code></p>
+    `;
+    const relsBody = document.getElementById('rels-body');
+    relsBody.innerHTML = '';
+    if (!data.relationships || data.relationships.length === 0) {
+      relsBody.innerHTML = '<tr><td colspan="4" class="muted">No relationships.</td></tr>';
+    } else {
+      data.relationships.forEach(function (rel) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><code>${escapeHtml(rel.source_id)}</code></td>
+          <td>${escapeHtml(rel.type || 'RELATES')}</td>
+          <td><code>${escapeHtml(rel.target_id)}</code></td>
+          <td><code>${formatProperties(rel.properties)}</code></td>
+        `;
+        relsBody.appendChild(tr);
+      });
+    }
+    const neighborsBody = document.getElementById('neighbors-body');
+    neighborsBody.innerHTML = '';
+    if (!data.neighbors || data.neighbors.length === 0) {
+      neighborsBody.innerHTML = '<tr><td colspan="3" class="muted">No neighbors.</td></tr>';
+    } else {
+      data.neighbors.forEach(function (neighbor) {
+        const tr = document.createElement('tr');
+        tr.className = 'node-row';
+        tr.dataset.nodeId = neighbor.id;
+        tr.innerHTML = `
+          <td><button type="button" class="link-button node-link">${escapeHtml(neighbor.label || neighbor.id)}</button></td>
+          <td>${escapeHtml(neighbor.type || '')}</td>
+          <td><code>${formatProperties(neighbor.properties)}</code></td>
+        `;
+        neighborsBody.appendChild(tr);
+      });
+    }
+    detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  document.getElementById('nodes-body').addEventListener('click', function (e) {
+    const row = e.target.closest('.node-row');
+    if (!row) return;
+    loadNeighbors(row.dataset.nodeId);
+  });
+  document.getElementById('neighbors-body').addEventListener('click', function (e) {
+    const row = e.target.closest('.node-row');
+    if (!row) return;
+    loadNeighbors(row.dataset.nodeId);
+  });
+  document.getElementById('nodes-prev').addEventListener('click', function () {
+    currentOffset = Math.max(0, currentOffset - pageSize);
+    loadNodes();
+  });
+  document.getElementById('nodes-next').addEventListener('click', function () {
+    currentOffset += pageSize;
+    loadNodes();
+  });
+
+  function renderGraph() {
+    const container = document.getElementById('graph-viz');
+    if (!vizData.nodes || vizData.nodes.length === 0) {
+      container.innerHTML = '<p class="muted">No nodes to visualize yet.</p>';
+      return;
+    }
+    const width = container.clientWidth || 800;
+    const height = 420;
+    const svg = d3.select(container).append('svg')
+      .attr('viewBox', [0, 0, width, height])
+      .attr('width', '100%')
+      .attr('height', height);
+
+    const nodes = vizData.nodes.map(function (d) { return Object.assign({}, d); });
+    const links = vizData.links.map(function (d) { return Object.assign({}, d); });
+
+    const simulation = d3.forceSimulation(nodes)
+      .force('link', d3.forceLink(links).id(function (d) { return d.id; }).distance(80))
+      .force('charge', d3.forceManyBody().strength(-180))
+      .force('center', d3.forceCenter(width / 2, height / 2));
+
+    const link = svg.append('g')
+      .attr('stroke', '#94a3b8')
+      .attr('stroke-opacity', 0.7)
+      .selectAll('line')
+      .data(links)
+      .join('line')
+      .attr('stroke-width', 1.5);
+
+    const node = svg.append('g')
+      .selectAll('circle')
+      .data(nodes)
+      .join('circle')
+      .attr('r', 8)
+      .attr('fill', '#2563eb')
+      .attr('cursor', 'pointer')
+      .call(d3.drag()
+        .on('start', function (event, d) {
+          if (!event.active) simulation.alphaTarget(0.3).restart();
+          d.fx = d.x;
+          d.fy = d.y;
+        })
+        .on('drag', function (event, d) {
+          d.fx = event.x;
+          d.fy = event.y;
+        })
+        .on('end', function (event, d) {
+          if (!event.active) simulation.alphaTarget(0);
+          d.fx = null;
+          d.fy = null;
+        }));
+
+    const label = svg.append('g')
+      .selectAll('text')
+      .data(nodes)
+      .join('text')
+      .text(function (d) { return d.label || d.id; })
+      .attr('font-size', 10)
+      .attr('dx', 12)
+      .attr('dy', 4)
+      .attr('fill', '#334155');
+
+    node.on('click', function (_event, d) { loadNeighbors(d.id); });
+
+    simulation.on('tick', function () {
+      link
+        .attr('x1', function (d) { return d.source.x; })
+        .attr('y1', function (d) { return d.source.y; })
+        .attr('x2', function (d) { return d.target.x; })
+        .attr('y2', function (d) { return d.target.y; });
+      node
+        .attr('cx', function (d) { return d.x; })
+        .attr('cy', function (d) { return d.y; });
+      label
+        .attr('x', function (d) { return d.x; })
+        .attr('y', function (d) { return d.y; });
+    });
+  }
+
+  loadNodes();
+  renderGraph();
+})();
+</script>
+{% endblock %}

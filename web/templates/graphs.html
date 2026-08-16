@@ -1,18 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Dashboard — agent-knowledge-graph{% endblock %}
+{% block title %}Graphs — agent-knowledge-graph{% endblock %}
 {% block content %}
 <section class="page-header">
-  <h1>Dashboard</h1>
-  <div class="actions">
-    <a class="button" href="/graphs/new">Create graph</a>
-    <a class="button secondary" href="/agents/new">Add agent</a>
-    <a class="button secondary" href="/setup">MCP setup</a>
-  </div>
+  <h1>Your graphs</h1>
+  <a class="button" href="/graphs/new">Create graph</a>
 </section>
-
-<p class="lead">Welcome back, {{ user.email }}.</p>
-
-<h2>Your graphs</h2>
 
 {% if graphs %}
 <div class="card-grid">
@@ -41,7 +33,7 @@
 {% else %}
 <div class="empty-state">
   <h2>No graphs yet</h2>
-  <p>Create your first knowledge graph to get started, then add an agent key for MCP access.</p>
+  <p>Create your first knowledge graph to get started.</p>
   <a class="button" href="/graphs/new">Create your first graph</a>
 </div>
 {% endif %}
