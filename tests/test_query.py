@@ -43,6 +43,8 @@ class TestSemanticSearch:
             [0.1] * 384,
             top_k=10,
             type_filter="session",
+            graph_id=None,
+            graph_ids=None,
         )
 
 
@@ -55,6 +57,8 @@ class TestTraverse:
             hops=2,
             rel_types=None,
             direction="outgoing",
+            graph_id=None,
+            graph_ids=None,
         )
 
 

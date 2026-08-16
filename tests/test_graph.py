@@ -244,7 +244,7 @@ class TestStats:
     def test_get_stats(self, client):
         mock_session = client._driver.session.return_value.__enter__.return_value
 
-        def mock_run(cypher, **kwargs):
+        def mock_run(cypher, params=None, **kwargs):
             result = MagicMock()
             if "count(r)" in cypher:
                 if "RELATES" in cypher:

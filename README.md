@@ -150,7 +150,23 @@ kg query explain "MATCH (a)-[r]->(b) RETURN a,r,b LIMIT 10"
 
 See `AGENTS.md` for setup and comparison details.
 
-## 10) Docker
+## 10) Web Dashboard & Multi-User
+
+Run a browser dashboard for signup/login, graph management, and agent API keys:
+
+```bash
+pip install -e ".[web]"
+kg web serve --host 127.0.0.1 --port 8000
+```
+
+- Dashboard: create isolated graphs (UUID `graph_id` scoping in Neo4j)
+- Agent keys: `kg_…` tokens for MCP clients (shown once, stored hashed)
+- Authenticated MCP HTTP API at `/mcp` with tools `kg_query`, `kg_semantic_search`, `kg_traverse`, `kg_stats`
+- Local CLI and stdio MCP continue to work unchanged on the default local graph
+
+See `docs/user-management.md` for architecture details and the manual migration path for existing graphs.
+
+## 11) Docker
 
 Use bundled compose for local Neo4j:
 
@@ -163,7 +179,7 @@ kg docker down
 
 Helpful script: `scripts/run-neo4j.sh`
 
-## 11) Development
+## 12) Development
 
 ```bash
 uv sync --extra dev
@@ -175,7 +191,7 @@ uv run mypy core cli pipelines adapters
 
 For contribution process, see `CONTRIBUTING.md`.
 
-## 12) FAQ
+## 13) FAQ
 
 ### Is this only for Hermes?
 
@@ -197,11 +213,11 @@ Yes. Extend `KnowledgePipeline` and register with `PipelineRegistry`.
 
 No. LangChain adapter code degrades gracefully when optional dependencies are absent.
 
-## 13) License
+## 14) License
 
 This project is licensed under MIT. See `LICENSE`.
 
-## 14) Changelog
+## 15) Changelog
 
 Initial release notes are tracked in `CHANGELOG.md`.
 # test

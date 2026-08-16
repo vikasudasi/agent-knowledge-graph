@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Agent created — agent-knowledge-graph{% endblock %}
+{% block content %}
+<section class="auth-card wide">
+  <h1>Agent created</h1>
+  <p>Agent <strong>{{ agent.name }}</strong> is ready. Copy your API key now — it will not be shown again.</p>
+  <div class="key-box">
+    <code id="api-key">{{ raw_key }}</code>
+    <button type="button" class="button small" onclick="navigator.clipboard.writeText(document.getElementById('api-key').textContent)">Copy</button>
+  </div>
+  <p class="muted">Use this key in MCP client configs on the <a href="/setup">setup page</a>.</p>
+  <a class="button" href="/setup">View MCP setup</a>
+  <a class="button secondary" href="/agents">Back to agents</a>
+</section>
+{% endblock %}

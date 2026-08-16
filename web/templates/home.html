@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Home — agent-knowledge-graph{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>Knowledge graph memory for AI agents</h1>
+  <p class="lead">
+    Store sessions, entities, and relationships in Neo4j. Search semantically with vector embeddings.
+    Ask natural-language questions that translate to Cypher.
+  </p>
+  <div class="actions">
+    <a class="button" href="/signup">Get started</a>
+    <a class="button secondary" href="/login">Log in</a>
+  </div>
+</section>
+
+<section class="features">
+  <div class="feature-card">
+    <h2>Graph storage</h2>
+    <p>Typed Resource nodes and RELATES edges in Neo4j with pipeline checkpoints.</p>
+  </div>
+  <div class="feature-card">
+    <h2>Semantic search</h2>
+    <p>Vector index over embeddings for meaning-based recall across your graph.</p>
+  </div>
+  <div class="feature-card">
+    <h2>NL → Cypher</h2>
+    <p>Ask questions in plain English; an LLM generates and runs Cypher for you.</p>
+  </div>
+  <div class="feature-card">
+    <h2>Multi-tenant MCP</h2>
+    <p>Create agent API keys and query your isolated graphs via the MCP HTTP API.</p>
+  </div>
+</section>
+{% endblock %}

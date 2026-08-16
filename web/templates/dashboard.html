@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — agent-knowledge-graph{% endblock %}
+{% block content %}
+<section class="page-header">
+  <h1>Your graphs</h1>
+  <div class="actions">
+    <a class="button" href="/graphs/new">Create graph</a>
+    <a class="button secondary" href="/agents/new">Add agent</a>
+    <a class="button secondary" href="/setup">MCP setup</a>
+  </div>
+</section>
+
+{% if graphs %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Nodes</th>
+      <th>Relationships</th>
+      <th>Created</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for graph in graphs %}
+    <tr>
+      <td>
+        <strong>{{ graph.name }}</strong>
+        {% if graph.description %}<div class="muted">{{ graph.description }}</div>{% endif %}
+      </td>
+      <td>{{ graph.node_count }}</td>
+      <td>{{ graph.relationship_count }}</td>
+      <td>{{ graph.created_at[:10] }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <h2>No graphs yet</h2>
+  <p>Create your first knowledge graph to get started, then add an agent key for MCP access.</p>
+  <a class="button" href="/graphs/new">Create your first graph</a>
+</div>
+{% endif %}
+{% endblock %}

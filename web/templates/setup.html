@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}MCP Setup — agent-knowledge-graph{% endblock %}
+{% block content %}
+<section class="page-header">
+  <h1>MCP client setup</h1>
+  <p class="lead">Connect your agent using the HTTP MCP endpoint and your API key.</p>
+</section>
+
+<p class="muted">Replace <code>{{ placeholder_key }}</code> with your actual key if you haven't already.</p>
+
+<section class="setup-block">
+  <h2>Hermes (<code>~/.hermes/config.yaml</code>)</h2>
+  <pre><code>mcp_servers:
+  knowledge-graph:
+    url: "{{ mcp_url }}"
+    transport: streamable-http
+    headers:
+      Authorization: "Bearer {{ placeholder_key }}"</code></pre>
+</section>
+
+<section class="setup-block">
+  <h2>Claude Desktop (<code>claude_desktop_config.json</code>)</h2>
+  <pre><code>{
+  "mcpServers": {
+    "knowledge-graph": {
+      "url": "{{ mcp_url }}",
+      "transport": "streamable-http",
+      "headers": {
+        "Authorization": "Bearer {{ placeholder_key }}"
+      }
+    }
+  }
+}</code></pre>
+</section>
+
+<section class="setup-block">
+  <h2>Cursor (<code>.cursor/mcp.json</code>)</h2>
+  <pre><code>{
+  "mcpServers": {
+    "knowledge-graph": {
+      "url": "{{ mcp_url }}",
+      "transport": "streamable-http",
+      "headers": {
+        "Authorization": "Bearer {{ placeholder_key }}"
+      }
+    }
+  }
+}</code></pre>
+</section>
+
+<section class="setup-block">
+  <h2>Available tools</h2>
+  <ul>
+    <li><code>kg_query</code> — natural-language question → Cypher → results</li>
+    <li><code>kg_semantic_search</code> — vector semantic search</li>
+    <li><code>kg_traverse</code> — graph traversal from a node</li>
+    <li><code>kg_stats</code> — node/relationship counts and index status</li>
+  </ul>
+  <p class="muted">SSE fallback endpoint: <code>{{ mcp_url }}/sse/sse</code> (POST messages to <code>{{ mcp_url }}/sse/messages/</code>)</p>
+</section>
+{% endblock %}
