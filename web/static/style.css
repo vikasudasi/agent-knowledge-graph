@@ -454,6 +454,24 @@ code {
   margin: 2rem 0;
 }
 
+.viz-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+
+.viz-toolbar h2 {
+  margin: 0;
+}
+
+#viz-status {
+  font-size: 0.875rem;
+  margin: 0 0 0.75rem;
+}
+
 .graph-viz {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -643,6 +661,11 @@ code {
   gap: 0.35rem;
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+.legend-item.is-match {
+  font-weight: 600;
+  color: var(--text);
 }
 
 .legend-swatch {
