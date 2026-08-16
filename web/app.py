@@ -51,8 +51,8 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
     app = FastAPI(title="agent-knowledge-graph", lifespan=lifespan)
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-    app.mount("/mcp", streamable_mcp)
     app.mount("/mcp/sse", sse_mcp)
+    app.mount("/mcp", streamable_mcp)
 
     def require_user(request: Request):  # type: ignore[no-untyped-def]
         session = request.cookies.get(SESSION_COOKIE)

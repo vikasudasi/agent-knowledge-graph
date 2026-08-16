@@ -268,7 +268,7 @@ def create_mcp_apps(
     )
 
     streamable_app = server.streamable_http_app(
-        streamable_http_path="",
+        streamable_http_path="/",
         token_verifier=verifier,
         auth=auth_settings,
         stateless_http=True,
