@@ -660,11 +660,53 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
                     }
 
             viz_nodes = list(nodes_by_id.values())
+
+            top_nodes: list[dict[str, Any]] = []
+            type_distribution: list[dict[str, Any]] = []
+            total_matches = 0
+            if is_filtered:
+                top_nodes = [
+                    {
+                        "id": row["id"],
+                        "label": row.get("label") or row["id"],
+                        "type": row.get("type", ""),
+                        "degree": int(row.get("degree", 0)),
+                    }
+                    for row in node_rows[:10]
+                    if row.get("id")
+                ]
+                type_dist_rows = graph_client.run_cypher(
+                    f"""
+                    MATCH (m:Resource)
+                    WHERE {match_where_sql}
+                    RETURN m.type AS type, count(m) AS count
+                    ORDER BY count DESC LIMIT 8
+                    """,
+                    params,
+                    graph_id=graph_id,
+                )
+                type_distribution = [
+                    {"type": row.get("type") or "unknown", "count": int(row.get("count", 0))} for row in type_dist_rows
+                ]
+                total_row = graph_client.run_cypher(
+                    f"MATCH (m:Resource) WHERE {match_where_sql} RETURN count(m) AS total",
+                    params,
+                    graph_id=graph_id,
+                )
+                total_matches = int(total_row[0]["total"]) if total_row else 0
         except Exception as exc:
             return JSONResponse({"error": str(exc)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
         finally:
             graph_client.close()
-        return JSONResponse({"nodes": viz_nodes, "links": links})
+        return JSONResponse(
+            {
+                "nodes": viz_nodes,
+                "links": links,
+                "top_nodes": top_nodes,
+                "type_distribution": type_distribution,
+                "total_matches": total_matches,
+            }
+        )
 
     @app.get("/graphs/{graph_id}/api/neighbors/{node_id}")
     async def graph_neighbors_api(graph_id: str, node_id: str, request: Request) -> Response:

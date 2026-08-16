@@ -22,24 +22,10 @@
     <span class="summary-label">Created</span>
     <span class="summary-value">{{ graph.created_at[:10] }}</span>
   </div>
-  {% if type_distribution %}
   <div class="summary-card summary-card-wide">
-    <span class="summary-label">Type distribution</span>
-    <div class="type-distribution">
-      {% set max_count = type_distribution[0].count %}
-      {% for item in type_distribution %}
-      {% set color = type_colors.get(item.type, default_type_color) %}
-      <div class="type-dist-row">
-        <span class="type-badge" style="background-color: {{ color }}20; color: {{ color }};">{{ item.type }}</span>
-        <span class="type-dist-bar-wrap">
-          <span class="type-dist-bar" style="width: {{ (item.count / max_count * 100) | round }}%; background-color: {{ color }};"></span>
-        </span>
-        <span class="type-dist-count muted">{{ item.count }}</span>
-      </div>
-      {% endfor %}
-    </div>
+    <span class="summary-label" id="type-dist-label">Type distribution</span>
+    <div class="type-distribution" id="type-distribution"></div>
   </div>
-  {% endif %}
 </section>
 
 <section class="graph-main-layout">
@@ -95,23 +81,11 @@
     </section>
   </div>
 
-  {% if top_nodes %}
   <aside class="top-nodes-sidebar">
     <h2>Most Connected</h2>
-    <ul class="top-nodes-list">
-      {% for node in top_nodes %}
-      {% set color = type_colors.get(node.type, default_type_color) %}
-      <li>
-        <button type="button" class="top-node-link" data-node-id="{{ node.id }}">
-          <span class="type-badge" style="background-color: {{ color }}20; color: {{ color }};">{{ node.type }}</span>
-          <span class="top-node-label">{{ node.label }}</span>
-          <span class="top-node-degree muted">({{ node.degree }})</span>
-        </button>
-      </li>
-      {% endfor %}
-    </ul>
+    <div class="muted" id="top-nodes-scope"></div>
+    <ul class="top-nodes-list" id="top-nodes-list"></ul>
   </aside>
-  {% endif %}
 </section>
 
 <section class="node-detail" id="node-detail" hidden>
@@ -152,6 +126,8 @@
   const graphId = {{ graph.id | tojson }};
   const pageSize = {{ page_size }};
   const vizData = {{ viz_data_json | safe }};
+  const initialTypeDist = {{ type_distribution | tojson }};
+  const initialTopNodes = {{ top_nodes | tojson }};
   const vizLimit = {{ viz_limit }};
   const TYPE_COLORS = {{ type_colors | tojson }};
   const DEFAULT_TYPE_COLOR = {{ default_type_color | tojson }};
@@ -183,9 +159,26 @@
     return div.innerHTML;
   }
 
-  function formatProperties(props) {
-    if (!props || Object.keys(props).length === 0) return '—';
-    return escapeHtml(JSON.stringify(props));
+  function renderPropsHtml(props) {
+    if (!props || typeof props !== 'object' || Object.keys(props).length === 0) {
+      return '<span class="muted">—</span>';
+    }
+    const keys = Object.keys(props).sort();
+    const parts = keys.map(function (key) {
+      const val = props[key];
+      if (val == null) {
+        return '<span class="prop-kv"><span class="prop-key">' + escapeHtml(key) + '</span><span class="prop-val muted">—</span></span>';
+      }
+      if (typeof val === 'object') {
+        const pretty = JSON.stringify(val, null, 2);
+        return '<span class="prop-kv"><span class="prop-key">' + escapeHtml(key) + '</span><code class="prop-code">' + escapeHtml(pretty) + '</code></span>';
+      }
+      const str = String(val);
+      const shown = str.length > 60 ? str.slice(0, 60) + '…' : str;
+      const title = str.length > 60 ? ' title="' + escapeHtml(str) + '"' : '';
+      return '<span class="prop-kv"><span class="prop-key">' + escapeHtml(key) + '</span><span class="prop-val"' + title + '>' + escapeHtml(shown) + '</span></span>';
+    });
+    return parts.join('<br>');
   }
 
   function renderPropertyList(props) {
@@ -249,6 +242,8 @@
       renderGraph(vizData);
       renderLegend(vizData);
       updateVizStatus(vizData, false);
+      renderTopNodes(initialTopNodes, false);
+      renderTypeDistribution(initialTypeDist, false);
       return;
     }
     try {
@@ -258,11 +253,15 @@
         container.innerHTML = '<p class="muted">No matching nodes.</p>';
         document.getElementById('type-legend').innerHTML = '';
         updateVizStatus({ nodes: [] }, true);
+        renderTopNodes([], true);
+        renderTypeDistribution([], true);
         return;
       }
       renderGraph(data);
       renderLegend(data);
       updateVizStatus(data, true);
+      renderTopNodes(data.top_nodes || [], true);
+      renderTypeDistribution(data.type_distribution || [], true);
     } catch (_err) {
       container.innerHTML = '<p class="muted">Failed to load graph visualization.</p>';
     }
@@ -283,7 +282,7 @@
         tr.innerHTML = `
           <td><button type="button" class="link-button node-link">${escapeHtml(node.label || node.id)}</button></td>
           <td>${typeBadgeHtml(node.type)}</td>
-          <td><code>${formatProperties(node.properties)}</code></td>
+          <td>${renderPropsHtml(node.properties)}</td>
           <td>${escapeHtml((node.created_at || '').slice(0, 10))}</td>
         `;
         tbody.appendChild(tr);
@@ -317,7 +316,7 @@
           <td><code>${escapeHtml(rel.source_id)}</code></td>
           <td>${escapeHtml(rel.type || 'RELATES')}</td>
           <td><code>${escapeHtml(rel.target_id)}</code></td>
-          <td><code>${formatProperties(rel.properties)}</code></td>
+          <td>${renderPropsHtml(rel.properties)}</td>
         `;
         relsBody.appendChild(tr);
       });
@@ -334,12 +333,51 @@
         tr.innerHTML = `
           <td><button type="button" class="link-button node-link">${escapeHtml(neighbor.label || neighbor.id)}</button></td>
           <td>${typeBadgeHtml(neighbor.type)}</td>
-          <td><code>${formatProperties(neighbor.properties)}</code></td>
+          <td>${renderPropsHtml(neighbor.properties)}</td>
         `;
         neighborsBody.appendChild(tr);
       });
     }
     detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderTypeDistribution(dist, scoped) {
+    const el = document.getElementById('type-distribution');
+    const labelEl = document.getElementById('type-dist-label');
+    if (!Array.isArray(dist) || dist.length === 0) {
+      el.innerHTML = '<p class="muted">No data</p>';
+      labelEl.textContent = scoped ? 'Type distribution (no results)' : 'Type distribution';
+      return;
+    }
+    labelEl.textContent = scoped ? 'Type distribution (in results)' : 'Type distribution';
+    const maxCount = dist[0].count || 1;
+    el.innerHTML = dist.map(function (item) {
+      const color = typeColor(item.type);
+      const pct = Math.round((item.count / maxCount) * 100);
+      return '<div class="type-dist-row">' +
+        '<span class="type-badge" style="background-color:' + color + '20;color:' + color + ';">' + escapeHtml(item.type || 'unknown') + '</span>' +
+        '<span class="type-dist-bar-wrap"><span class="type-dist-bar" style="width:' + pct + '%;background-color:' + color + ';"></span></span>' +
+        '<span class="type-dist-count muted">' + item.count + '</span>' +
+        '</div>';
+    }).join('');
+  }
+
+  function renderTopNodes(nodes, scoped) {
+    const list = document.getElementById('top-nodes-list');
+    const scopeEl = document.getElementById('top-nodes-scope');
+    scopeEl.textContent = scoped ? 'Most connected among search results.' : '';
+    if (!Array.isArray(nodes) || nodes.length === 0) {
+      list.innerHTML = '<li><span class="muted">No nodes.</span></li>';
+      return;
+    }
+    list.innerHTML = nodes.map(function (node) {
+      const color = typeColor(node.type);
+      return '<li><button type="button" class="top-node-link" data-node-id="' + escapeHtml(node.id) + '">' +
+        '<span class="type-badge" style="background-color:' + color + '20;color:' + color + ';">' + escapeHtml(node.type || 'unknown') + '</span>' +
+        '<span class="top-node-label">' + escapeHtml(node.label || node.id) + '</span>' +
+        '<span class="top-node-degree muted">(' + (node.degree || 0) + ')</span>' +
+        '</button></li>';
+    }).join('');
   }
 
   function renderLegend(data) {
@@ -371,10 +409,9 @@
     if (!row) return;
     loadNeighbors(row.dataset.nodeId);
   });
-  document.querySelectorAll('.top-node-link').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      loadNeighbors(btn.dataset.nodeId);
-    });
+  document.getElementById('top-nodes-list').addEventListener('click', function (e) {
+    const btn = e.target.closest('.top-node-link');
+    if (btn) loadNeighbors(btn.dataset.nodeId);
   });
   document.getElementById('nodes-prev').addEventListener('click', function () {
     currentOffset = Math.max(0, currentOffset - pageSize);
@@ -418,6 +455,8 @@
     renderGraph(vizData);
     renderLegend(vizData);
     updateVizStatus(vizData, false);
+    renderTopNodes(initialTopNodes, false);
+    renderTypeDistribution(initialTypeDist, false);
     loadNodes();
   });
 
@@ -516,6 +555,8 @@
     });
   }
 
+  renderTypeDistribution(initialTypeDist, false);
+  renderTopNodes(initialTopNodes, false);
   loadNodes();
   renderLegend(vizData);
   renderGraph(vizData);
