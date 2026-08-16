@@ -60,8 +60,12 @@ def get_engine() -> QueryEngine:
 TOOLS: list[Tool] = [
     Tool(
         name="kg_query",
-        description="Ask a natural-language question about the knowledge graph"
-        " — translates to Cypher and returns results",
+        description=(
+            "Ask the knowledge graph (your long-term memory of past work, sessions, projects, "
+            "skills, concepts) a NATURAL-LANGUAGE question that needs an exact, Cypher-backed "
+            "answer — counts, specific properties, or relationship queries. Prefer "
+            "kg_semantic_search for fuzzy 'find related things' recall."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -75,7 +79,12 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="kg_semantic_search",
-        description="Search the knowledge graph by semantic meaning — returns the most similar resources",
+        description=(
+            "Find the most semantically similar resources (sessions, projects, skills, concepts, "
+            "files) to free-text — best default for long-term memory recall like 'what do I know "
+            "about X?' Returns ranked, fuzzy results with relevance scores. Use this when you want "
+            "recall/discovery rather than an exact answer (that's kg_query)."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -94,7 +103,11 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="kg_traverse",
-        description="Traverse relationships from a starting node in the knowledge graph",
+        description=(
+            "Walk relationships outward from a KNOWN node id to see what it connects to and how "
+            "(x hops). Get the start_id first from kg_query/kg_semantic_search results. Not for "
+            "finding what to look up — use kg_semantic_search for discovery."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -113,8 +126,10 @@ TOOLS: list[Tool] = [
     ),
     Tool(
         name="kg_stats",
-        description="Return statistics about the knowledge graph —"
-        " node/relationship counts, vector index status, checkpoints",
+        description=(
+            "Return knowledge graph statistics: node/relationship counts, vector-index readiness, "
+            "ingestion checkpoints. Use to confirm the graph is populated/healthy before querying."
+        ),
         inputSchema={
             "type": "object",
             "properties": {},
