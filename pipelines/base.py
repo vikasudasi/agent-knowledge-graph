@@ -279,7 +279,9 @@ class PipelineRegistry:
         return [{"name": p.name, "description": p.description, "version": p.version} for p in cls._pipelines.values()]
 
     @classmethod
-    def create_context(cls, config: KGConfig, dry_run: bool = False, full_rebuild: bool = False, graph_id: str | None = None) -> PipelineContext:
+    def create_context(
+        cls, config: KGConfig, dry_run: bool = False, full_rebuild: bool = False, graph_id: str | None = None
+    ) -> PipelineContext:
         """Create a PipelineContext from config with all providers wired up."""
         llm = LLMProviderFactory.create(config)
         embedder = EmbeddingProviderFactory.create(config)
