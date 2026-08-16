@@ -532,6 +532,140 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
             }
         )
 
+    @app.get("/graphs/{graph_id}/api/viz")
+    async def graph_viz_api(
+        graph_id: str,
+        request: Request,
+        q: str | None = None,
+        type: str | None = None,
+        limit: int = 100,
+        edge_limit: int = 300,
+    ) -> Response:
+        user = request.state.user
+        if user is None:
+            return JSONResponse({"error": "Unauthorized"}, status_code=status.HTTP_401_UNAUTHORIZED)
+        graph = store.get_graph(graph_id, user.id)
+        if graph is None:
+            return JSONResponse({"error": "Graph not found"}, status_code=status.HTTP_404_NOT_FOUND)
+        node_limit = max(1, min(limit, 200))
+        edge_limit = max(1, min(edge_limit, 500))
+        search_q = (q or "").strip()
+        type_filter = (type or "").strip()
+        graph_client = _graph_client()
+        try:
+            where_clauses = ["n.graph_id = $graph_id"]
+            match_where_clauses = ["m.graph_id = $graph_id"]
+            params: dict[str, Any] = {"graph_id": graph_id, "limit": node_limit, "edge_limit": edge_limit}
+            if search_q:
+                where_clauses.append("toLower(n.label) CONTAINS toLower($q)")
+                match_where_clauses.append("toLower(m.label) CONTAINS toLower($q)")
+                params["q"] = search_q
+            if type_filter:
+                where_clauses.append("n.type = $type")
+                match_where_clauses.append("m.type = $type")
+                params["type"] = type_filter
+            where_sql = " AND ".join(where_clauses)
+            match_where_sql = " AND ".join(match_where_clauses)
+            is_filtered = bool(search_q or type_filter)
+
+            node_rows = graph_client.run_cypher(
+                f"""
+                MATCH (n:Resource)
+                WHERE {where_sql}
+                OPTIONAL MATCH (n)-[r:RELATES]-()
+                WITH n, count(r) AS degree
+                RETURN n.id AS id, n.label AS label, n.type AS type, degree
+                ORDER BY degree DESC
+                LIMIT $limit
+                """,
+                params,
+                graph_id=graph_id,
+            )
+            match_ids = {row["id"] for row in node_rows if row.get("id")}
+
+            if is_filtered and match_ids:
+                rel_rows = graph_client.run_cypher(
+                    f"""
+                    MATCH (m:Resource)
+                    WHERE {match_where_sql}
+                    WITH collect(DISTINCT m.id) AS match_ids
+                    MATCH (a:Resource)-[r:RELATES]->(b:Resource)
+                    WHERE a.graph_id = $graph_id AND b.graph_id = $graph_id
+                      AND (a.id IN match_ids OR b.id IN match_ids)
+                    RETURN a.id AS source, a.label AS source_label, a.type AS source_type,
+                           b.id AS target, b.label AS target_label, b.type AS target_type,
+                           r.type AS rel_type
+                    LIMIT $edge_limit
+                    """,
+                    params,
+                    graph_id=graph_id,
+                )
+            elif is_filtered:
+                rel_rows = []
+            elif match_ids:
+                rel_rows = graph_client.run_cypher(
+                    """
+                    MATCH (a:Resource)-[r:RELATES]->(b:Resource)
+                    WHERE a.graph_id = $graph_id AND b.graph_id = $graph_id
+                      AND a.id IN $node_ids AND b.id IN $node_ids
+                    RETURN a.id AS source, a.label AS source_label, a.type AS source_type,
+                           b.id AS target, b.label AS target_label, b.type AS target_type,
+                           r.type AS rel_type
+                    LIMIT $edge_limit
+                    """,
+                    {"graph_id": graph_id, "node_ids": list(match_ids), "edge_limit": edge_limit},
+                    graph_id=graph_id,
+                )
+            else:
+                rel_rows = []
+
+            nodes_by_id: dict[str, dict[str, Any]] = {}
+            for row in node_rows:
+                node_id = row.get("id")
+                if not node_id:
+                    continue
+                nodes_by_id[node_id] = {
+                    "id": node_id,
+                    "label": row.get("label") or node_id,
+                    "type": row.get("type", ""),
+                    "degree": int(row.get("degree", 0)),
+                    "is_match": True,
+                }
+
+            links: list[dict[str, Any]] = []
+            seen_links: set[tuple[str, str, str]] = set()
+            for row in rel_rows:
+                source_id = row.get("source")
+                target_id = row.get("target")
+                if not source_id or not target_id:
+                    continue
+                rel_type = row.get("rel_type", "RELATES")
+                link_key = (source_id, target_id, rel_type)
+                if link_key in seen_links:
+                    continue
+                seen_links.add(link_key)
+                links.append({"source": source_id, "target": target_id, "type": rel_type})
+                for endpoint_id, label_key, type_key in (
+                    (source_id, "source_label", "source_type"),
+                    (target_id, "target_label", "target_type"),
+                ):
+                    if endpoint_id in nodes_by_id:
+                        continue
+                    nodes_by_id[endpoint_id] = {
+                        "id": endpoint_id,
+                        "label": row.get(label_key) or endpoint_id,
+                        "type": row.get(type_key, ""),
+                        "degree": 0,
+                        "is_match": False,
+                    }
+
+            viz_nodes = list(nodes_by_id.values())
+        except Exception as exc:
+            return JSONResponse({"error": str(exc)}, status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        finally:
+            graph_client.close()
+        return JSONResponse({"nodes": viz_nodes, "links": links})
+
     @app.get("/graphs/{graph_id}/api/neighbors/{node_id}")
     async def graph_neighbors_api(graph_id: str, node_id: str, request: Request) -> Response:
         user = request.state.user

@@ -61,8 +61,11 @@
     </section>
 
     <section class="graph-viz-section">
-      <h2>Graph visualization</h2>
-      <p class="muted">Showing up to {{ viz_limit }} most connected nodes. Click a node to inspect relationships.</p>
+      <div class="viz-toolbar">
+        <h2>Graph visualization</h2>
+        <button type="button" class="button secondary" id="viz-reset-btn">Reset view</button>
+      </div>
+      <p id="viz-status" class="muted">Showing up to {{ viz_limit }} most connected nodes. Click a node to inspect relationships.</p>
       <div id="graph-viz" class="graph-viz"></div>
       <div class="type-legend" id="type-legend"></div>
     </section>
@@ -149,8 +152,10 @@
   const graphId = {{ graph.id | tojson }};
   const pageSize = {{ page_size }};
   const vizData = {{ viz_data_json | safe }};
+  const vizLimit = {{ viz_limit }};
   const TYPE_COLORS = {{ type_colors | tojson }};
   const DEFAULT_TYPE_COLOR = {{ default_type_color | tojson }};
+  const defaultVizStatus = `Showing up to ${vizLimit} most connected nodes. Click a node to inspect relationships.`;
   let currentOffset = 0;
   let totalNodes = 0;
   let searchQuery = '';
@@ -214,6 +219,53 @@
     if (searchQuery) params.set('q', searchQuery);
     if (typeFilter) params.set('type', typeFilter);
     return `/graphs/${graphId}/api/nodes?${params.toString()}`;
+  }
+
+  function buildVizUrl() {
+    const params = new URLSearchParams();
+    if (searchQuery) params.set('q', searchQuery);
+    if (typeFilter) params.set('type', typeFilter);
+    const qs = params.toString();
+    return `/graphs/${graphId}/api/viz${qs ? `?${qs}` : ''}`;
+  }
+
+  function updateVizStatus(data, filtered) {
+    const statusEl = document.getElementById('viz-status');
+    if (!filtered) {
+      statusEl.textContent = defaultVizStatus;
+      return;
+    }
+    const matchCount = (data.nodes || []).filter(function (n) { return n.is_match; }).length;
+    const parts = [`Narrowed to ${matchCount} matching node${matchCount === 1 ? '' : 's'} + neighbors`];
+    if (searchQuery) parts.push(`(search: '${searchQuery}')`);
+    else if (typeFilter) parts.push(`(type: ${typeFilter})`);
+    statusEl.textContent = parts.join(' ');
+  }
+
+  async function loadViz() {
+    const container = document.getElementById('graph-viz');
+    const filtered = Boolean(searchQuery || typeFilter);
+    if (!filtered) {
+      renderGraph(vizData);
+      renderLegend(vizData);
+      updateVizStatus(vizData, false);
+      return;
+    }
+    try {
+      const res = await fetch(buildVizUrl());
+      const data = await res.json();
+      if (data.error || !data.nodes || data.nodes.length === 0) {
+        container.innerHTML = '<p class="muted">No matching nodes.</p>';
+        document.getElementById('type-legend').innerHTML = '';
+        updateVizStatus({ nodes: [] }, true);
+        return;
+      }
+      renderGraph(data);
+      renderLegend(data);
+      updateVizStatus(data, true);
+    } catch (_err) {
+      container.innerHTML = '<p class="muted">Failed to load graph visualization.</p>';
+    }
   }
 
   async function loadNodes() {
@@ -290,10 +342,10 @@
     detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 
-  function renderLegend() {
+  function renderLegend(data) {
     const legend = document.getElementById('type-legend');
     const typesInViz = {};
-    (vizData.nodes || []).forEach(function (n) {
+    (data.nodes || []).forEach(function (n) {
       if (n.type) typesInViz[n.type] = (typesInViz[n.type] || 0) + 1;
     });
     const sorted = Object.keys(typesInViz).sort(function (a, b) {
@@ -339,6 +391,7 @@
     typeFilter = document.getElementById('node-type-filter').value;
     currentOffset = 0;
     loadNodes();
+    loadViz();
   });
   document.getElementById('node-search-input').addEventListener('input', function () {
     clearTimeout(searchDebounceTimer);
@@ -347,17 +400,31 @@
       typeFilter = document.getElementById('node-type-filter').value;
       currentOffset = 0;
       loadNodes();
+      loadViz();
     }, 300);
   });
   document.getElementById('node-type-filter').addEventListener('change', function () {
     typeFilter = document.getElementById('node-type-filter').value;
     currentOffset = 0;
     loadNodes();
+    loadViz();
+  });
+  document.getElementById('viz-reset-btn').addEventListener('click', function () {
+    document.getElementById('node-search-input').value = '';
+    document.getElementById('node-type-filter').value = '';
+    searchQuery = '';
+    typeFilter = '';
+    currentOffset = 0;
+    renderGraph(vizData);
+    renderLegend(vizData);
+    updateVizStatus(vizData, false);
+    loadNodes();
   });
 
-  function renderGraph() {
+  function renderGraph(data) {
     const container = document.getElementById('graph-viz');
-    if (!vizData.nodes || vizData.nodes.length === 0) {
+    container.innerHTML = '';
+    if (!data.nodes || data.nodes.length === 0) {
       container.innerHTML = '<p class="muted">No nodes to visualize yet.</p>';
       return;
     }
@@ -368,8 +435,8 @@
       .attr('width', '100%')
       .attr('height', height);
 
-    const nodes = vizData.nodes.map(function (d) { return Object.assign({}, d); });
-    const links = vizData.links.map(function (d) { return Object.assign({}, d); });
+    const nodes = data.nodes.map(function (d) { return Object.assign({}, d); });
+    const links = (data.links || []).map(function (d) { return Object.assign({}, d); });
 
     const simulation = d3.forceSimulation(nodes)
       .force('link', d3.forceLink(links).id(function (d) { return d.id; }).distance(80))
@@ -390,6 +457,9 @@
       .join('circle')
       .attr('r', function (d) { return nodeRadius(d.degree); })
       .attr('fill', function (d) { return typeColor(d.type); })
+      .attr('fill-opacity', function (d) { return d.is_match === false ? 0.35 : 1; })
+      .attr('stroke', function (d) { return d.is_match === true ? '#1f2937' : 'none'; })
+      .attr('stroke-width', function (d) { return d.is_match === true ? 1.5 : 0; })
       .attr('cursor', 'pointer')
       .call(d3.drag()
         .on('start', function (event, d) {
@@ -409,7 +479,14 @@
 
     node.append('title')
       .text(function (d) {
-        return `${d.label || d.id}\nType: ${d.type}\nConnections: ${d.degree || 0}`;
+        const role = d.is_match === false ? 'Neighbor' : (d.is_match === true ? 'Match' : '');
+        const lines = [
+          d.label || d.id,
+          `Type: ${d.type}`,
+          `Connections: ${d.degree || 0}`,
+        ];
+        if (role) lines.push(role);
+        return lines.join('\n');
       });
 
     const label = svg.append('g')
@@ -440,8 +517,8 @@
   }
 
   loadNodes();
-  renderLegend();
-  renderGraph();
+  renderLegend(vizData);
+  renderGraph(vizData);
 })();
 </script>
 {% endblock %}
