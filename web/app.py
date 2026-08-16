@@ -38,6 +38,20 @@ STATIC_DIR = Path(__file__).parent / "static"
 GRAPH_VIZ_NODE_LIMIT = 200
 NODES_PAGE_SIZE = 50
 
+TYPE_COLORS: dict[str, str] = {
+    "session": "#16a34a",
+    "person": "#ec4899",
+    "project": "#6366f1",
+    "tool": "#2563eb",
+    "concept": "#f59e0b",
+    "file": "#0d9488",
+    "artifact": "#9333ea",
+    "task": "#0891b2",
+    "skill": "#f43f5e",
+    "function": "#84cc16",
+}
+DEFAULT_TYPE_COLOR = "#94a3b8"
+
 
 def _redirect_with_flash(path: str, flash: str, message: str) -> RedirectResponse:
     separator = "&" if "?" in path else "?"
@@ -339,6 +353,9 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
         node_count = 0
         relationship_count = 0
         viz_data = {"nodes": [], "links": []}
+        type_distribution: list[dict[str, Any]] = []
+        top_nodes: list[dict[str, Any]] = []
+        node_types: list[str] = []
         graph_client = _graph_client()
         try:
             stats = graph_client.get_stats(graph_id=graph_id)
@@ -348,13 +365,57 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
                 """
                 MATCH (n:Resource)
                 WHERE n.graph_id = $graph_id
-                RETURN n.id AS id, n.label AS label, n.type AS type
-                ORDER BY n.ingested_at DESC
+                OPTIONAL MATCH (n)-[r:RELATES]-()
+                WITH n, count(r) AS degree
+                RETURN n.id AS id, n.label AS label, n.type AS type, degree
+                ORDER BY degree DESC
                 LIMIT $limit
                 """,
                 {"graph_id": graph_id, "limit": GRAPH_VIZ_NODE_LIMIT},
                 graph_id=graph_id,
             )
+            type_dist_rows = graph_client.run_cypher(
+                """
+                MATCH (n:Resource) WHERE n.graph_id = $graph_id
+                RETURN n.type AS type, count(n) AS count
+                ORDER BY count DESC LIMIT 8
+                """,
+                {"graph_id": graph_id},
+                graph_id=graph_id,
+            )
+            type_distribution = [
+                {"type": row.get("type") or "unknown", "count": int(row.get("count", 0))} for row in type_dist_rows
+            ]
+            top_node_rows = graph_client.run_cypher(
+                """
+                MATCH (n:Resource)-[r:RELATES]-()
+                WHERE n.graph_id = $graph_id
+                RETURN n.id AS id, n.label AS label, n.type AS type, count(r) AS degree
+                ORDER BY degree DESC LIMIT 10
+                """,
+                {"graph_id": graph_id},
+                graph_id=graph_id,
+            )
+            top_nodes = [
+                {
+                    "id": row["id"],
+                    "label": row.get("label") or row["id"],
+                    "type": row.get("type", ""),
+                    "degree": int(row.get("degree", 0)),
+                }
+                for row in top_node_rows
+                if row.get("id")
+            ]
+            type_rows = graph_client.run_cypher(
+                """
+                MATCH (n:Resource) WHERE n.graph_id = $graph_id
+                RETURN DISTINCT n.type AS type
+                ORDER BY type
+                """,
+                {"graph_id": graph_id},
+                graph_id=graph_id,
+            )
+            node_types = [row["type"] for row in type_rows if row.get("type")]
             node_ids = [row["id"] for row in node_rows if row.get("id")]
             rel_rows: list[dict[str, Any]] = []
             if node_ids:
@@ -370,7 +431,12 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
                 )
             viz_data = {
                 "nodes": [
-                    {"id": row["id"], "label": row.get("label") or row["id"], "type": row.get("type", "")}
+                    {
+                        "id": row["id"],
+                        "label": row.get("label") or row["id"],
+                        "type": row.get("type", ""),
+                        "degree": int(row.get("degree", 0)),
+                    }
                     for row in node_rows
                     if row.get("id")
                 ],
@@ -395,6 +461,11 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
                 "viz_data_json": json.dumps(viz_data),
                 "page_size": NODES_PAGE_SIZE,
                 "viz_limit": GRAPH_VIZ_NODE_LIMIT,
+                "type_colors": TYPE_COLORS,
+                "default_type_color": DEFAULT_TYPE_COLOR,
+                "type_distribution": type_distribution,
+                "top_nodes": top_nodes,
+                "node_types": node_types,
             },
         )
 
@@ -404,6 +475,8 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
         request: Request,
         offset: int = 0,
         limit: int = NODES_PAGE_SIZE,
+        q: str | None = None,
+        type: str | None = None,
     ) -> Response:
         user = request.state.user
         if user is None:
@@ -413,23 +486,34 @@ def create_app(config: KGConfig | None = None) -> FastAPI:
             return JSONResponse({"error": "Graph not found"}, status_code=status.HTTP_404_NOT_FOUND)
         limit = max(1, min(limit, 200))
         offset = max(0, offset)
+        search_q = (q or "").strip()
+        type_filter = (type or "").strip()
         graph_client = _graph_client()
         try:
+            where_clauses = ["n.graph_id = $graph_id"]
+            params: dict[str, Any] = {"graph_id": graph_id, "offset": offset, "limit": limit}
+            if search_q:
+                where_clauses.append("toLower(n.label) CONTAINS toLower($q)")
+                params["q"] = search_q
+            if type_filter:
+                where_clauses.append("n.type = $type")
+                params["type"] = type_filter
+            where_sql = " AND ".join(where_clauses)
             rows = graph_client.run_cypher(
-                """
+                f"""
                 MATCH (n:Resource)
-                WHERE n.graph_id = $graph_id
+                WHERE {where_sql}
                 RETURN n.id AS id, n.type AS type, n.label AS label,
                        properties(n) AS properties, n.ingested_at AS ingested_at
                 ORDER BY n.ingested_at DESC
                 SKIP $offset LIMIT $limit
                 """,
-                {"graph_id": graph_id, "offset": offset, "limit": limit},
+                params,
                 graph_id=graph_id,
             )
             total_row = graph_client.run_cypher(
-                "MATCH (n:Resource) WHERE n.graph_id = $graph_id RETURN count(n) AS total",
-                {"graph_id": graph_id},
+                f"MATCH (n:Resource) WHERE {where_sql} RETURN count(n) AS total",
+                {k: v for k, v in params.items() if k not in ("offset", "limit")},
                 graph_id=graph_id,
             )
             total = int(total_row[0]["total"]) if total_row else 0
