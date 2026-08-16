@@ -119,6 +119,23 @@ class MetadataStore:
             row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
             return None if row is None else self._row_to_user(row)
 
+    def update_user(self, user_id: str, *, password_hash: str | None = None) -> User | None:
+        if password_hash is None:
+            return self.get_user_by_id(user_id)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?",
+                (password_hash, user_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+        return self.get_user_by_id(user_id)
+
+    def delete_user(self, user_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+            return cursor.rowcount > 0
+
     def create_graph(self, graph_id: str, user_id: str, name: str, description: str = "") -> GraphRecord:
         created_at = datetime.now(UTC).isoformat()
         with self._connect() as conn:
@@ -152,6 +169,34 @@ class MetadataStore:
                     (graph_id, user_id),
                 ).fetchone()
             return None if row is None else self._row_to_graph(row)
+
+    def update_graph(
+        self,
+        graph_id: str,
+        user_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> GraphRecord | None:
+        graph = self.get_graph(graph_id, user_id)
+        if graph is None:
+            return None
+        new_name = name if name is not None else graph.name
+        new_description = description if description is not None else graph.description
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE graphs SET name = ?, description = ? WHERE id = ? AND user_id = ?",
+                (new_name, new_description, graph_id, user_id),
+            )
+        return self.get_graph(graph_id, user_id)
+
+    def delete_graph(self, graph_id: str, user_id: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM graphs WHERE id = ? AND user_id = ?",
+                (graph_id, user_id),
+            )
+            return cursor.rowcount > 0
 
     def create_agent(
         self,
