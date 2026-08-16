@@ -28,6 +28,7 @@ def _build_context(
     dry_run: bool = False,
     full_rebuild: bool = False,
     limit: int | None = None,
+    graph_id: str | None = None,
 ) -> PipelineContext:
     """Build a PipelineContext from config."""
     graph = Neo4jClient(config)
@@ -42,6 +43,7 @@ def _build_context(
         dry_run=dry_run,
         full_rebuild=full_rebuild,
         max_records=limit,
+        graph_id=graph_id,
     )
 
 
@@ -63,6 +65,7 @@ def run(
     dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Run without writing to graph"),
     full_rebuild: bool = typer.Option(False, "--rebuild", "-f", help="Ignore checkpoints, full rebuild"),
     limit: int | None = typer.Option(None, "--limit", "-l", help="Max records to process"),
+    graph_id: str | None = typer.Option(None, "--graph-id", help="Graph UUID to scope ingestion to (None = unscoped)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Detailed logging"),
 ) -> None:
     """Run one or all registered pipelines to build the knowledge graph."""
@@ -85,7 +88,7 @@ def run(
         pipelines_to_run = [matched]
 
     console.print(f"[bold]Running {len(pipelines_to_run)} pipeline(s)[/]")
-    context = _build_context(config, dry_run=dry_run, full_rebuild=full_rebuild, limit=limit)
+    context = _build_context(config, dry_run=dry_run, full_rebuild=full_rebuild, limit=limit, graph_id=graph_id)
     try:
         for pipe in pipelines_to_run:
             console.print(f"\n[cyan]=== {pipe.name} ({pipe.description}) ===[/]")

@@ -32,6 +32,7 @@ class PipelineContext:
     dry_run: bool = False
     full_rebuild: bool = False
     max_records: int | None = None
+    graph_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -101,7 +102,7 @@ class KnowledgePipeline(ABC, Generic[T]):
         # Load checkpoint
         checkpoint: PipelineCheckpoint | None = None
         if not full_rebuild:
-            checkpoint = context.graph.get_checkpoint(self._name)
+            checkpoint = context.graph.get_checkpoint(self._name, graph_id=context.graph_id)
             if checkpoint and checkpoint.last_processed_id:
                 logger.info(
                     f"Resuming from checkpoint: {checkpoint.last_processed_id} ({checkpoint.total_processed} processed)"
@@ -155,7 +156,7 @@ class KnowledgePipeline(ABC, Generic[T]):
             if not context.dry_run:
                 for resource in embedded_record:
                     try:
-                        context.graph.upsert_resource(resource)
+                        context.graph.upsert_resource(resource, graph_id=context.graph_id)
                         result.resources_created += 1
                     except Exception as e:
                         logger.error(f"Error writing resource {resource.id}: {e}")
@@ -172,7 +173,7 @@ class KnowledgePipeline(ABC, Generic[T]):
                     total_processed=(checkpoint.total_processed if checkpoint else 0) + (i + 1),
                     updated_at=datetime.now(UTC),
                 )
-                context.graph.save_checkpoint(new_checkpoint)
+                context.graph.save_checkpoint(new_checkpoint, graph_id=context.graph_id)
                 result.checkpoint = new_checkpoint
 
             if progress_callback:
@@ -278,7 +279,7 @@ class PipelineRegistry:
         return [{"name": p.name, "description": p.description, "version": p.version} for p in cls._pipelines.values()]
 
     @classmethod
-    def create_context(cls, config: KGConfig, dry_run: bool = False, full_rebuild: bool = False) -> PipelineContext:
+    def create_context(cls, config: KGConfig, dry_run: bool = False, full_rebuild: bool = False, graph_id: str | None = None) -> PipelineContext:
         """Create a PipelineContext from config with all providers wired up."""
         llm = LLMProviderFactory.create(config)
         embedder = EmbeddingProviderFactory.create(config)
@@ -291,4 +292,5 @@ class PipelineRegistry:
             graph=graph,
             dry_run=dry_run,
             full_rebuild=full_rebuild,
+            graph_id=graph_id,
         )
