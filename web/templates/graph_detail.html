@@ -22,36 +22,93 @@
     <span class="summary-label">Created</span>
     <span class="summary-value">{{ graph.created_at[:10] }}</span>
   </div>
+  {% if type_distribution %}
+  <div class="summary-card summary-card-wide">
+    <span class="summary-label">Type distribution</span>
+    <div class="type-distribution">
+      {% set max_count = type_distribution[0].count %}
+      {% for item in type_distribution %}
+      {% set color = type_colors.get(item.type, default_type_color) %}
+      <div class="type-dist-row">
+        <span class="type-badge" style="background-color: {{ color }}20; color: {{ color }};">{{ item.type }}</span>
+        <span class="type-dist-bar-wrap">
+          <span class="type-dist-bar" style="width: {{ (item.count / max_count * 100) | round }}%; background-color: {{ color }};"></span>
+        </span>
+        <span class="type-dist-count muted">{{ item.count }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 </section>
 
-<section class="graph-viz-section">
-  <h2>Graph visualization</h2>
-  <p class="muted">Showing up to {{ viz_limit }} nodes. Click a node in the table below to inspect relationships.</p>
-  <div id="graph-viz" class="graph-viz"></div>
-</section>
+<section class="graph-main-layout">
+  <div class="graph-main-content">
+    <section class="node-search">
+      <form id="node-search-form" class="search-form">
+        <input type="search" id="node-search-input" placeholder="Search nodes…" aria-label="Search nodes">
+        <label class="search-type-label">
+          <span class="muted">Type:</span>
+          <select id="node-type-filter" aria-label="Filter by type">
+            <option value="">All</option>
+            {% for t in node_types %}
+            <option value="{{ t }}">{{ t }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <button type="submit" class="button secondary">Filter</button>
+      </form>
+    </section>
 
-<section class="node-explorer">
-  <h2>Nodes</h2>
-  <div class="table-scroll">
-    <table class="data-table" id="nodes-table">
-      <thead>
-        <tr>
-          <th>Label</th>
-          <th>Type</th>
-          <th>Properties</th>
-          <th>Created</th>
-        </tr>
-      </thead>
-      <tbody id="nodes-body">
-        <tr><td colspan="4" class="muted">Loading nodes…</td></tr>
-      </tbody>
-    </table>
+    <section class="graph-viz-section">
+      <h2>Graph visualization</h2>
+      <p class="muted">Showing up to {{ viz_limit }} most connected nodes. Click a node to inspect relationships.</p>
+      <div id="graph-viz" class="graph-viz"></div>
+      <div class="type-legend" id="type-legend"></div>
+    </section>
+
+    <section class="node-explorer">
+      <h2>Nodes</h2>
+      <div class="table-scroll">
+        <table class="data-table" id="nodes-table">
+          <thead>
+            <tr>
+              <th>Label</th>
+              <th>Type</th>
+              <th>Properties</th>
+              <th>Created</th>
+            </tr>
+          </thead>
+          <tbody id="nodes-body">
+            <tr><td colspan="4" class="muted">Loading nodes…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="pagination" id="nodes-pagination">
+        <button type="button" class="button secondary" id="nodes-prev" disabled>Previous</button>
+        <span id="nodes-page-info" class="muted"></span>
+        <button type="button" class="button secondary" id="nodes-next" disabled>Next</button>
+      </div>
+    </section>
   </div>
-  <div class="pagination" id="nodes-pagination">
-    <button type="button" class="button secondary" id="nodes-prev" disabled>Previous</button>
-    <span id="nodes-page-info" class="muted"></span>
-    <button type="button" class="button secondary" id="nodes-next" disabled>Next</button>
-  </div>
+
+  {% if top_nodes %}
+  <aside class="top-nodes-sidebar">
+    <h2>Most Connected</h2>
+    <ul class="top-nodes-list">
+      {% for node in top_nodes %}
+      {% set color = type_colors.get(node.type, default_type_color) %}
+      <li>
+        <button type="button" class="top-node-link" data-node-id="{{ node.id }}">
+          <span class="type-badge" style="background-color: {{ color }}20; color: {{ color }};">{{ node.type }}</span>
+          <span class="top-node-label">{{ node.label }}</span>
+          <span class="top-node-degree muted">({{ node.degree }})</span>
+        </button>
+      </li>
+      {% endfor %}
+    </ul>
+  </aside>
+  {% endif %}
 </section>
 
 <section class="node-detail" id="node-detail" hidden>
@@ -92,12 +149,32 @@
   const graphId = {{ graph.id | tojson }};
   const pageSize = {{ page_size }};
   const vizData = {{ viz_data_json | safe }};
+  const TYPE_COLORS = {{ type_colors | tojson }};
+  const DEFAULT_TYPE_COLOR = {{ default_type_color | tojson }};
   let currentOffset = 0;
   let totalNodes = 0;
+  let searchQuery = '';
+  let typeFilter = '';
+  let searchDebounceTimer = null;
+
+  function typeColor(type) {
+    return TYPE_COLORS[type] || DEFAULT_TYPE_COLOR;
+  }
+
+  function typeBadgeHtml(type) {
+    const color = typeColor(type);
+    const label = type || 'unknown';
+    return `<span class="type-badge" style="background-color: ${color}20; color: ${color};">${escapeHtml(label)}</span>`;
+  }
+
+  function nodeRadius(degree) {
+    const r = 4 + Math.sqrt(degree || 0) * 2.5;
+    return Math.max(4, Math.min(24, r));
+  }
 
   function escapeHtml(text) {
     const div = document.createElement('div');
-    div.textContent = text;
+    div.textContent = text == null ? '' : String(text);
     return div.innerHTML;
   }
 
@@ -106,13 +183,46 @@
     return escapeHtml(JSON.stringify(props));
   }
 
+  function renderPropertyList(props) {
+    if (!props || Object.keys(props).length === 0) {
+      return '<p class="muted">No additional properties.</p>';
+    }
+    const keys = Object.keys(props).sort();
+    let html = '<dl class="property-list">';
+    keys.forEach(function (key) {
+      const val = props[key];
+      let valueHtml;
+      if (val == null) {
+        valueHtml = '<span class="muted">—</span>';
+      } else if (typeof val === 'object') {
+        valueHtml = '<code>' + escapeHtml(JSON.stringify(val, null, 2)) + '</code>';
+      } else {
+        const str = String(val);
+        valueHtml = str.length > 80 ? '<code>' + escapeHtml(str) + '</code>' : escapeHtml(str);
+      }
+      html += '<dt>' + escapeHtml(key) + '</dt><dd>' + valueHtml + '</dd>';
+    });
+    html += '</dl>';
+    return html;
+  }
+
+  function buildNodesUrl() {
+    const params = new URLSearchParams({
+      offset: String(currentOffset),
+      limit: String(pageSize),
+    });
+    if (searchQuery) params.set('q', searchQuery);
+    if (typeFilter) params.set('type', typeFilter);
+    return `/graphs/${graphId}/api/nodes?${params.toString()}`;
+  }
+
   async function loadNodes() {
-    const res = await fetch(`/graphs/${graphId}/api/nodes?offset=${currentOffset}&limit=${pageSize}`);
+    const res = await fetch(buildNodesUrl());
     const data = await res.json();
     const tbody = document.getElementById('nodes-body');
     tbody.innerHTML = '';
     if (!data.nodes || data.nodes.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" class="muted">No nodes in this graph yet.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="4" class="muted">No nodes match your filters.</td></tr>';
     } else {
       data.nodes.forEach(function (node) {
         const tr = document.createElement('tr');
@@ -120,7 +230,7 @@
         tr.dataset.nodeId = node.id;
         tr.innerHTML = `
           <td><button type="button" class="link-button node-link">${escapeHtml(node.label || node.id)}</button></td>
-          <td>${escapeHtml(node.type || '')}</td>
+          <td>${typeBadgeHtml(node.type)}</td>
           <td><code>${formatProperties(node.properties)}</code></td>
           <td>${escapeHtml((node.created_at || '').slice(0, 10))}</td>
         `;
@@ -141,8 +251,8 @@
     const detail = document.getElementById('node-detail');
     detail.hidden = false;
     document.getElementById('node-detail-content').innerHTML = `
-      <p><strong>${escapeHtml(data.node.label || data.node.id)}</strong> <span class="muted">(${escapeHtml(data.node.type || '')})</span></p>
-      <p><code>${formatProperties(data.node.properties)}</code></p>
+      <p><strong>${escapeHtml(data.node.label || data.node.id)}</strong> ${typeBadgeHtml(data.node.type)}</p>
+      ${renderPropertyList(data.node.properties)}
     `;
     const relsBody = document.getElementById('rels-body');
     relsBody.innerHTML = '';
@@ -171,13 +281,32 @@
         tr.dataset.nodeId = neighbor.id;
         tr.innerHTML = `
           <td><button type="button" class="link-button node-link">${escapeHtml(neighbor.label || neighbor.id)}</button></td>
-          <td>${escapeHtml(neighbor.type || '')}</td>
+          <td>${typeBadgeHtml(neighbor.type)}</td>
           <td><code>${formatProperties(neighbor.properties)}</code></td>
         `;
         neighborsBody.appendChild(tr);
       });
     }
     detail.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function renderLegend() {
+    const legend = document.getElementById('type-legend');
+    const typesInViz = {};
+    (vizData.nodes || []).forEach(function (n) {
+      if (n.type) typesInViz[n.type] = (typesInViz[n.type] || 0) + 1;
+    });
+    const sorted = Object.keys(typesInViz).sort(function (a, b) {
+      return typesInViz[b] - typesInViz[a];
+    });
+    legend.innerHTML = '';
+    sorted.forEach(function (type) {
+      const item = document.createElement('span');
+      item.className = 'legend-item';
+      const color = typeColor(type);
+      item.innerHTML = `<span class="legend-swatch" style="background-color: ${color};"></span>${escapeHtml(type)}`;
+      legend.appendChild(item);
+    });
   }
 
   document.getElementById('nodes-body').addEventListener('click', function (e) {
@@ -190,12 +319,39 @@
     if (!row) return;
     loadNeighbors(row.dataset.nodeId);
   });
+  document.querySelectorAll('.top-node-link').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      loadNeighbors(btn.dataset.nodeId);
+    });
+  });
   document.getElementById('nodes-prev').addEventListener('click', function () {
     currentOffset = Math.max(0, currentOffset - pageSize);
     loadNodes();
   });
   document.getElementById('nodes-next').addEventListener('click', function () {
     currentOffset += pageSize;
+    loadNodes();
+  });
+
+  document.getElementById('node-search-form').addEventListener('submit', function (e) {
+    e.preventDefault();
+    searchQuery = document.getElementById('node-search-input').value.trim();
+    typeFilter = document.getElementById('node-type-filter').value;
+    currentOffset = 0;
+    loadNodes();
+  });
+  document.getElementById('node-search-input').addEventListener('input', function () {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(function () {
+      searchQuery = document.getElementById('node-search-input').value.trim();
+      typeFilter = document.getElementById('node-type-filter').value;
+      currentOffset = 0;
+      loadNodes();
+    }, 300);
+  });
+  document.getElementById('node-type-filter').addEventListener('change', function () {
+    typeFilter = document.getElementById('node-type-filter').value;
+    currentOffset = 0;
     loadNodes();
   });
 
@@ -232,8 +388,8 @@
       .selectAll('circle')
       .data(nodes)
       .join('circle')
-      .attr('r', 8)
-      .attr('fill', '#2563eb')
+      .attr('r', function (d) { return nodeRadius(d.degree); })
+      .attr('fill', function (d) { return typeColor(d.type); })
       .attr('cursor', 'pointer')
       .call(d3.drag()
         .on('start', function (event, d) {
@@ -250,6 +406,11 @@
           d.fx = null;
           d.fy = null;
         }));
+
+    node.append('title')
+      .text(function (d) {
+        return `${d.label || d.id}\nType: ${d.type}\nConnections: ${d.degree || 0}`;
+      });
 
     const label = svg.append('g')
       .selectAll('text')
@@ -279,6 +440,7 @@
   }
 
   loadNodes();
+  renderLegend();
   renderGraph();
 })();
 </script>
