@@ -12,6 +12,8 @@ from neo4j import Driver, GraphDatabase
 from core.config import KGConfig
 from core.models import GraphStats, PipelineCheckpoint, QueryResult, Relationship, Resource
 
+DEFAULT_GRAPH_ID = "default"
+
 
 class Neo4jClient:
     """Manage a Neo4j connection pool and provide high-level graph operations."""
@@ -51,12 +53,35 @@ class Neo4jClient:
             raise RuntimeError("Not connected. Call connect() or use context manager.")
         return self._driver
 
+    @staticmethod
+    def _graph_filter_clause(
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
+        *,
+        node_alias: str = "n",
+        prefix: str = "WHERE",
+    ) -> tuple[str, dict[str, Any]]:
+        """Build graph_id scoping clause. None graph_id preserves legacy unscoped behavior."""
+        if graph_ids:
+            if len(graph_ids) == 1:
+                return f"{prefix} {node_alias}.graph_id = $graph_id", {"graph_id": graph_ids[0]}
+            return f"{prefix} {node_alias}.graph_id IN $graph_ids", {"graph_ids": graph_ids}
+        if graph_id is not None:
+            if graph_id == DEFAULT_GRAPH_ID:
+                return (
+                    f"{prefix} ({node_alias}.graph_id IS NULL OR {node_alias}.graph_id = $graph_id)",
+                    {"graph_id": DEFAULT_GRAPH_ID},
+                )
+            return f"{prefix} {node_alias}.graph_id = $graph_id", {"graph_id": graph_id}
+        return "", {}
+
     def initialize_schema(self) -> None:
         """Create constraints, indexes, and vector index."""
         with self.driver.session(database=self._config.neo4j.database) as session:
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (r:Resource) REQUIRE r.id IS UNIQUE")
             session.run("CREATE INDEX IF NOT EXISTS FOR (r:Resource) ON (r.type)")
             session.run("CREATE INDEX IF NOT EXISTS FOR (r:Resource) ON (r.label)")
+            session.run("CREATE INDEX IF NOT EXISTS FOR (r:Resource) ON (r.graph_id)")
             session.run("CREATE CONSTRAINT IF NOT EXISTS FOR (c:PipelineCheckpoint) REQUIRE c.pipeline_name IS UNIQUE")
 
             dimension = self._config.embedding.dimension
@@ -92,30 +117,35 @@ class Neo4jClient:
         except Exception:
             return False
 
-    def upsert_resource(self, resource: Resource) -> None:
+    def upsert_resource(self, resource: Resource, graph_id: str | None = None) -> None:
         """Merge a Resource node by id."""
-        query = """
-        MERGE (r:Resource {id: $id})
+        graph_set = ""
+        params: dict[str, Any] = {
+            "id": resource.id,
+            "type": resource.type,
+            "label": resource.label,
+            "properties_json": json.dumps(resource.properties or {}),
+            "ingested_at": (resource.ingested_at or datetime.now(UTC)).isoformat(),
+        }
+        if graph_id is not None:
+            graph_set = ", r.graph_id = $graph_id"
+            params["graph_id"] = graph_id
+        query = f"""
+        MERGE (r:Resource {{id: $id}})
         ON CREATE SET
             r.type = $type,
             r.label = $label,
             r.properties_json = $properties_json,
-            r.ingested_at = $ingested_at
+            r.ingested_at = $ingested_at{graph_set}
         ON MATCH SET
             r.type = $type,
             r.label = $label,
-            r.properties_json = $properties_json
+            r.properties_json = $properties_json{graph_set}
         """
         with self.driver.session(database=self._config.neo4j.database) as session:
             session.run(
                 query,
-                {
-                    "id": resource.id,
-                    "type": resource.type,
-                    "label": resource.label,
-                    "properties_json": json.dumps(resource.properties or {}),
-                    "ingested_at": (resource.ingested_at or datetime.now(UTC)).isoformat(),
-                },
+                params,
             )
             if resource.embedding is not None:
                 session.run(
@@ -123,30 +153,36 @@ class Neo4jClient:
                     {"id": resource.id, "embedding": resource.embedding},
                 )
 
-    def upsert_resources_batch(self, resources: list[Resource]) -> None:
+    def upsert_resources_batch(self, resources: list[Resource], graph_id: str | None = None) -> None:
         """Upsert multiple Resource nodes."""
+        graph_set = ""
+        if graph_id is not None:
+            graph_set = ", r.graph_id = $graph_id"
         with self.driver.session(database=self._config.neo4j.database) as session:
             for resource in resources:
+                params: dict[str, Any] = {
+                    "id": resource.id,
+                    "type": resource.type,
+                    "label": resource.label,
+                    "properties_json": json.dumps(resource.properties or {}),
+                    "ingested_at": (resource.ingested_at or datetime.now(UTC)).isoformat(),
+                }
+                if graph_id is not None:
+                    params["graph_id"] = graph_id
                 session.run(
-                    """
-                    MERGE (r:Resource {id: $id})
+                    f"""
+                    MERGE (r:Resource {{id: $id}})
                     ON CREATE SET
                         r.type = $type,
                         r.label = $label,
                         r.properties_json = $properties_json,
-                        r.ingested_at = $ingested_at
+                        r.ingested_at = $ingested_at{graph_set}
                     ON MATCH SET
                         r.type = $type,
                         r.label = $label,
-                        r.properties_json = $properties_json
+                        r.properties_json = $properties_json{graph_set}
                     """,
-                    {
-                        "id": resource.id,
-                        "type": resource.type,
-                        "label": resource.label,
-                        "properties_json": json.dumps(resource.properties or {}),
-                        "ingested_at": (resource.ingested_at or datetime.now(UTC)).isoformat(),
-                    },
+                    params,
                 )
                 if resource.embedding is not None:
                     session.run(
@@ -154,10 +190,18 @@ class Neo4jClient:
                         {"id": resource.id, "embedding": resource.embedding},
                     )
 
-    def get_resource(self, resource_id: str) -> Resource | None:
+    def get_resource(
+        self,
+        resource_id: str,
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
+    ) -> Resource | None:
         """Fetch a Resource by id."""
+        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="r", prefix="AND")
+        query = f"MATCH (r:Resource {{id: $id}}){graph_clause} RETURN r"
+        params: dict[str, Any] = {"id": resource_id, **graph_params}
         with self.driver.session(database=self._config.neo4j.database) as session:
-            result = session.run("MATCH (r:Resource {id: $id}) RETURN r", {"id": resource_id})
+            result = session.run(query, params)
             record = result.single()
             if record is None:
                 return None
@@ -234,19 +278,26 @@ class Neo4jClient:
         query_embedding: list[float],
         top_k: int = 10,
         type_filter: str | None = None,
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
     ) -> QueryResult:
         """Run semantic search through Neo4j vector index using SEARCH clause."""
         cypher = (
             "MATCH (n:Resource)\nSEARCH n IN ( VECTOR INDEX resource_embedding"
             " FOR $query_embedding LIMIT $top_k )\nSCORE AS score"
         )
-        if type_filter:
-            cypher += "\nWHERE n.type = $type_filter"
-        cypher += "\nRETURN n, score ORDER BY score DESC"
-
+        where_parts: list[str] = []
         params: dict[str, Any] = {"top_k": top_k, "query_embedding": query_embedding}
+        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="n")
+        if graph_clause:
+            where_parts.append(graph_clause.removeprefix("WHERE ").strip())
+            params.update(graph_params)
         if type_filter:
+            where_parts.append("n.type = $type_filter")
             params["type_filter"] = type_filter
+        if where_parts:
+            cypher += "\nWHERE " + " AND ".join(where_parts)
+        cypher += "\nRETURN n, score ORDER BY score DESC"
 
         t0 = time.monotonic()
         resources: list[Resource] = []
@@ -273,6 +324,8 @@ class Neo4jClient:
         hops: int = 1,
         rel_types: list[str] | None = None,
         direction: str = "both",
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
     ) -> QueryResult:
         """Traverse graph neighborhood from a start node."""
         if direction not in {"both", "incoming", "outgoing"}:
@@ -293,18 +346,26 @@ class Neo4jClient:
         else:
             pattern = f"-[r:RELATES*1..{hops}]-"
 
-        cypher = (
-            "MATCH path = (start:Resource {id: $start_id})"
-            f"{pattern}(end:Resource) "
-            "RETURN nodes(path) AS nodes, relationships(path) AS rels"
+        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="start", prefix="WHERE")
+        end_graph_clause, end_graph_params = self._graph_filter_clause(
+            graph_id, graph_ids, node_alias="end", prefix="WHERE"
         )
+        cypher = "MATCH (start:Resource {id: $start_id})"
+        if graph_clause:
+            cypher += f"\n{graph_clause}"
+        cypher += f"\nMATCH path = (start){pattern}(end:Resource)"
+        if end_graph_clause:
+            end_condition = end_graph_clause.removeprefix("WHERE ").strip().replace("end.", "end.", 1)
+            cypher += f"\nWHERE {end_condition}"
+        cypher += "\nRETURN nodes(path) AS nodes, relationships(path) AS rels"
+        params: dict[str, Any] = {"start_id": start_id, **graph_params, **end_graph_params}
 
         t0 = time.monotonic()
         seen_nodes: dict[str, Resource] = {}
         seen_rels: list[Relationship] = []
 
         with self.driver.session(database=self._config.neo4j.database) as session:
-            for record in session.run(cypher, {"start_id": start_id}):
+            for record in session.run(cypher, params):
                 for node in record["nodes"]:
                     node_id = node.get("id", "")
                     if node_id and node_id not in seen_nodes:
@@ -345,21 +406,31 @@ class Neo4jClient:
         query_embedding: list[float],
         cypher_filter: str = "",
         top_k: int = 10,
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
     ) -> QueryResult:
         """Run vector search with optional post-filter using SEARCH clause."""
         cypher = (
             "MATCH (n:Resource)\nSEARCH n IN ( VECTOR INDEX resource_embedding"
             " FOR $query_embedding LIMIT $top_k )\nSCORE AS score"
         )
+        where_parts: list[str] = []
+        params: dict[str, Any] = {"query_embedding": query_embedding, "top_k": top_k}
+        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="n")
+        if graph_clause:
+            where_parts.append(graph_clause.removeprefix("WHERE ").strip())
+            params.update(graph_params)
         if cypher_filter:
-            cypher += f"\nWHERE {cypher_filter}"
+            where_parts.append(cypher_filter)
+        if where_parts:
+            cypher += "\nWHERE " + " AND ".join(where_parts)
         cypher += "\nWITH n, score ORDER BY score DESC LIMIT $top_k\nRETURN n, score"
 
         t0 = time.monotonic()
         resources: list[Resource] = []
         scores: list[float] = []
         with self.driver.session(database=self._config.neo4j.database) as session:
-            for record in session.run(cypher, {"query_embedding": query_embedding, "top_k": top_k}):
+            for record in session.run(cypher, params):
                 node = record["n"]
                 resources.append(
                     Resource(
@@ -418,26 +489,51 @@ class Neo4jClient:
             return {key: cls._serialize_value(item) for key, item in value.items()}
         return value
 
-    def run_cypher(self, cypher: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def run_cypher(
+        self,
+        cypher: str,
+        params: dict[str, Any] | None = None,
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """Execute raw Cypher and return row dicts.
 
         Values that are Neo4j Graph objects (Node, Relationship, Path) are
         converted to plain JSON-serializable dicts so downstream callers can
         safely json.dumps the result (e.g. the MCP server entrypoint).
         """
+        merged_params = dict(params or {})
+        if graph_ids:
+            merged_params.setdefault("graph_ids", graph_ids)
+        elif graph_id is not None:
+            merged_params.setdefault("graph_id", graph_id)
         with self.driver.session(database=self._config.neo4j.database) as session:
-            result = session.run(cypher, params or {})
+            result = session.run(cypher, merged_params)
             return [
                 {key: self._serialize_value(value) for key, value in record.items()}  # type: ignore[no-untyped-call]
                 for record in result
             ]
 
-    def get_stats(self) -> GraphStats:
+    def get_stats(
+        self,
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
+    ) -> GraphStats:
         """Return node/relationship counts, vector-index state, and checkpoints."""
         stats = GraphStats()
+        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="r", prefix="WHERE")
+        rel_graph_clause, rel_graph_params = self._graph_filter_clause(
+            graph_id, graph_ids, node_alias="a", prefix="WHERE"
+        )
         with self.driver.session(database=self._config.neo4j.database) as session:
-            node_count = session.run("MATCH (r:Resource) RETURN count(r) AS count").single()
-            rel_count = session.run("MATCH ()-[r:RELATES]->() RETURN count(r) AS count").single()
+            node_count = session.run(
+                f"MATCH (r:Resource){graph_clause} RETURN count(r) AS count",
+                graph_params,
+            ).single()
+            rel_count = session.run(
+                f"MATCH (a:Resource)-[r:RELATES]->(b:Resource){rel_graph_clause} RETURN count(r) AS count",
+                rel_graph_params,
+            ).single()
 
             if node_count is not None:
                 stats.node_count = int(node_count["count"])
@@ -449,7 +545,8 @@ class Neo4jClient:
                 # case-insensitively so a healthy index isn't reported as false.
                 stats.vector_index_ready = str(record.get("state", "")).lower() == "online"
 
-            for record in session.run("MATCH (c:PipelineCheckpoint) RETURN c"):
+            cp_clause, cp_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="c", prefix="WHERE")
+            for record in session.run(f"MATCH (c:PipelineCheckpoint){cp_clause} RETURN c", cp_params):
                 node = record["c"]
                 checkpoint = PipelineCheckpoint(
                     pipeline_name=node.get("pipeline_name", ""),
@@ -461,11 +558,18 @@ class Neo4jClient:
 
         return stats
 
-    def get_checkpoint(self, pipeline_name: str) -> PipelineCheckpoint | None:
+    def get_checkpoint(
+        self,
+        pipeline_name: str,
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
+    ) -> PipelineCheckpoint | None:
         """Fetch the checkpoint for a pipeline."""
-        query = "MATCH (c:PipelineCheckpoint {pipeline_name: $name}) RETURN c"
+        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="c", prefix="AND")
+        query = f"MATCH (c:PipelineCheckpoint {{pipeline_name: $name}}){graph_clause} RETURN c"
+        params: dict[str, Any] = {"name": pipeline_name, **graph_params}
         with self.driver.session(database=self._config.neo4j.database) as session:
-            record = session.run(query, {"name": pipeline_name}).single()
+            record = session.run(query, params).single()
             if record is None:
                 return None
             node = record["c"]
@@ -477,25 +581,30 @@ class Neo4jClient:
                 updated_at=node.get("updated_at"),
             )
 
-    def save_checkpoint(self, checkpoint: PipelineCheckpoint) -> None:
+    def save_checkpoint(self, checkpoint: PipelineCheckpoint, graph_id: str | None = None) -> None:
         """Upsert a pipeline checkpoint."""
-        query = """
-        MERGE (c:PipelineCheckpoint {pipeline_name: $name})
+        graph_set = ""
+        params: dict[str, Any] = {
+            "name": checkpoint.pipeline_name,
+            "last_id": checkpoint.last_processed_id,
+            "last_processed_timestamp": (
+                checkpoint.last_processed_timestamp.isoformat() if checkpoint.last_processed_timestamp else None
+            ),
+            "total": checkpoint.total_processed,
+            "updated_at": datetime.now(UTC).isoformat(),
+        }
+        if graph_id is not None:
+            graph_set = ", c.graph_id = $graph_id"
+            params["graph_id"] = graph_id
+        query = f"""
+        MERGE (c:PipelineCheckpoint {{pipeline_name: $name}})
         SET c.last_processed_id = $last_id,
             c.last_processed_timestamp = $last_processed_timestamp,
             c.total_processed = $total,
-            c.updated_at = $updated_at
+            c.updated_at = $updated_at{graph_set}
         """
         with self.driver.session(database=self._config.neo4j.database) as session:
             session.run(
                 query,
-                {
-                    "name": checkpoint.pipeline_name,
-                    "last_id": checkpoint.last_processed_id,
-                    "last_processed_timestamp": (
-                        checkpoint.last_processed_timestamp.isoformat() if checkpoint.last_processed_timestamp else None
-                    ),
-                    "total": checkpoint.total_processed,
-                    "updated_at": datetime.now(UTC).isoformat(),
-                },
+                params,
             )

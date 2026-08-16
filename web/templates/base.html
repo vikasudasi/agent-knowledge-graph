@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}agent-knowledge-graph{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="container header-inner">
+      <a class="brand" href="/">agent-knowledge-graph</a>
+      <nav>
+        {% if request.state.user is defined and request.state.user %}
+          <a href="/dashboard">Dashboard</a>
+          <a href="/setup">Setup</a>
+          <a href="/agents">Agents</a>
+          <form class="inline-form" action="/logout" method="post">
+            <button type="submit" class="link-button">Logout</button>
+          </form>
+        {% else %}
+          <a href="/login">Login</a>
+          <a href="/signup" class="button small">Sign up</a>
+        {% endif %}
+      </nav>
+    </div>
+  </header>
+  <main class="container">
+    {% block content %}{% endblock %}
+  </main>
+  <footer class="site-footer">
+    <div class="container">Persistent knowledge graph memory for AI agents</div>
+  </footer>
+</body>
+</html>

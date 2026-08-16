@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Agents — agent-knowledge-graph{% endblock %}
+{% block content %}
+<section class="page-header">
+  <h1>Agent keys</h1>
+  <a class="button" href="/agents/new">Create agent</a>
+</section>
+
+{% if agents %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Key prefix</th>
+      <th>Created</th>
+      <th>Status</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for agent in agents %}
+    <tr>
+      <td>{{ agent.name }}</td>
+      <td><code>{{ agent.key_prefix }}…</code></td>
+      <td>{{ agent.created_at[:10] }}</td>
+      <td>{% if agent.revoked %}<span class="badge revoked">Revoked</span>{% else %}<span class="badge active">Active</span>{% endif %}</td>
+      <td>
+        {% if not agent.revoked %}
+        <form method="post" action="/agents/{{ agent.id }}/revoke">
+          <button type="submit" class="link-button danger">Revoke</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <p>No agents yet. Create an agent to get an API key for MCP access.</p>
+  <a class="button" href="/agents/new">Create agent</a>
+</div>
+{% endif %}
+{% endblock %}

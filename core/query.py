@@ -51,10 +51,14 @@ class QueryEngine:
         graph: Neo4jClient,
         embedder: EmbeddingProvider | None = None,
         llm: LLMClient | None = None,
+        graph_id: str | None = None,
+        graph_ids: list[str] | None = None,
     ) -> None:
         self._graph = graph
         self._embedder = embedder
         self._llm = llm
+        self._graph_id = graph_id
+        self._graph_ids = graph_ids
 
     def semantic(self, query: str, top_k: int = 10, type_filter: str | None = None) -> KGQueryResult:
         """Search by semantic meaning — embed query, vector search."""
@@ -63,7 +67,13 @@ class QueryEngine:
 
         t0 = time.monotonic()
         query_vec = self._embedder.embed_query(query)
-        result = self._graph.vector_search(query_vec, top_k=top_k, type_filter=type_filter)
+        result = self._graph.vector_search(
+            query_vec,
+            top_k=top_k,
+            type_filter=type_filter,
+            graph_id=self._graph_id,
+            graph_ids=self._graph_ids,
+        )
         result.execution_time_ms = (time.monotonic() - t0) * 1000
         return result
 
@@ -75,7 +85,14 @@ class QueryEngine:
         direction: str = "both",
     ) -> KGQueryResult:
         """Graph traversal from a node."""
-        return self._graph.traverse(start_id, hops=hops, rel_types=rel_types, direction=direction)
+        return self._graph.traverse(
+            start_id,
+            hops=hops,
+            rel_types=rel_types,
+            direction=direction,
+            graph_id=self._graph_id,
+            graph_ids=self._graph_ids,
+        )
 
     def hybrid(
         self,
@@ -89,7 +106,13 @@ class QueryEngine:
 
         t0 = time.monotonic()
         query_vec = self._embedder.embed_query(query)
-        result = self._graph.hybrid_search(query_vec, cypher_filter=cypher_filter, top_k=top_k)
+        result = self._graph.hybrid_search(
+            query_vec,
+            cypher_filter=cypher_filter,
+            top_k=top_k,
+            graph_id=self._graph_id,
+            graph_ids=self._graph_ids,
+        )
         result.execution_time_ms = (time.monotonic() - t0) * 1000
         return result
 
@@ -99,10 +122,22 @@ class QueryEngine:
             return NLQueryResult(error="QueryEngine needs LLM for NL->Cypher")
 
         t0 = time.monotonic()
+        system_prompt = NL_CYPHER_SYSTEM_PROMPT
+        if self._graph_ids:
+            graph_hint = ", ".join(self._graph_ids)
+            system_prompt += (
+                f"\n\nIMPORTANT: Only query nodes belonging to graph_id IN [{graph_hint}]. "
+                "Add WHERE r.graph_id IN [...] (or equivalent) to every MATCH on Resource nodes."
+            )
+        elif self._graph_id is not None:
+            system_prompt += (
+                f"\n\nIMPORTANT: Only query nodes where graph_id = '{self._graph_id}'. "
+                "Add WHERE r.graph_id = '...' to every MATCH on Resource nodes."
+            )
         try:
             cypher = self._llm.generate(
                 prompt=f"Convert this question to a Cypher query:\n\n{question}",
-                system_prompt=NL_CYPHER_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 model=self._llm.config.query_model,
                 temperature=0.1,
             )
@@ -116,7 +151,11 @@ class QueryEngine:
             return NLQueryResult(error="LLM returned empty Cypher", execution_time_ms=elapsed)
 
         try:
-            raw_results = self._graph.run_cypher(cypher)
+            raw_results = self._graph.run_cypher(
+                cypher,
+                graph_id=self._graph_id,
+                graph_ids=self._graph_ids,
+            )
         except Exception as exc:
             elapsed = (time.monotonic() - t0) * 1000
             return NLQueryResult(
