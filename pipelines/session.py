@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor
@@ -49,11 +50,79 @@ Extract the following in JSON format with EXACTLY this structure:
   "outcome": "completed|in_progress|failed|unknown"
 }}
 
-CRITICAL RULES:
-- "entities" MUST be a JSON array of objects. Each object MUST have "name", "type", and "label" fields.
-- "relations" MUST be a JSON array of objects. Each object MUST have "source", "target", and "type" fields.
-- Do NOT use strings for entities or relations — use the object format shown above.
+ENTITY QUALITY RULES — extract ONLY durable, reusable concepts. Skip transient noise:
+- EXTRACT: people, projects, tools, libraries, frameworks, architectural patterns,
+  concrete files being created/modified, named skills, technical concepts, decisions.
+- SKIP:
+  • CSS selectors / HTML class names / UI styling (.btn, .container, flex-row)
+  • Linter error codes (E402, RUF015, TRY004) and HTTP status codes (200, 404)
+  • CLI flags (--verbose, --force) and config key=value pairs
+  • Raw Python tracebacks, error messages, or exception strings
+  • Numbers, timestamps, hex values in isolation
+  • File paths mentioned only in passing (extract only if the file IS the subject)
+  • Generic filler words ("bug", "fix", "test", "issue", "thing")
+
+LABEL QUALITY RULES:
+- Labels MUST be unique and specific. Never use "Topic", "Company", "Bug", "Feature",
+  or "Concept" as a label — use the actual name: "Neo4j" not "Database",
+  "CypherSyntaxError" not "Bug", "DeepSeek" not "AI Model".
+- Each label should self-identify the entity without needing the type field.
 - Be thorough but accurate. Only extract what is clearly present in the text."""
+
+
+# ---------------------------------------------------------------------------
+# Entity noise filter — catches the 4 categories of junk seen in production:
+#   CSS selectors (.btn-primary), lint codes (E402, RUF015), CLI flags (--verbose),
+#   escape-artifact strings ('nonetype'-object-has-no-attribute)
+# ---------------------------------------------------------------------------
+_RE_CSS_SELECTOR = re.compile(
+    r"^(\.|#)[\w-]+(?:[.:#][\w-]+)*$"  # .class, #id, element.class, .class::pseudo
+)
+_RE_LINT_CODE = re.compile(r"^[A-Z]{1,6}\d{2,4}$")  # E402, RUF015, TRY004
+_RE_CLI_FLAG = re.compile(r"^--?[\w-]+$")  # --verbose, -f, --no-cache
+_RE_ERROR_CODE = re.compile(r"^\d{3}[\s-]")  # 402 error, 502-bad-gateway
+_RE_ESCAPE_ARTIFACT = re.compile(r"'.+?'-")  # 'nonetype'-object, 'total'-is-undefined
+_RE_PURE_DIGITS = re.compile(r"^\d+$")  # 384, 500, 7000
+_RE_SHORT_GENERIC = re.compile(r"^(bug|fix|test|issue|thing|stuff|item|todo|misc)$", re.I)
+_RE_GENERIC_LABEL = re.compile(r"^(Topic|Company|Bug|Feature|Concept|Tool|File|Project|Task|Skill|Artifact|Person|Error|Exception|Module|Class|Function|Command|Config|Model|Issue|Decision|Process|Event|Format|Type|Category|Tag)$", re.I)
+
+
+def _is_valid_entity(name: str, ent_type: str, label: str) -> tuple[bool, str]:
+    """Return (valid, reason) for an extracted entity. Rejects obvious noise."""
+    name_stripped = name.strip()
+
+    # Too short or empty
+    if len(name_stripped) < 2:
+        return False, "too short"
+
+    # Pure numbers
+    if _RE_PURE_DIGITS.match(name_stripped):
+        return False, "pure digits"
+
+    # Escape-artifact strings from mangled tracebacks
+    if _RE_ESCAPE_ARTIFACT.search(name_stripped):
+        return False, "escape artifact"
+
+    # Short generic filler words
+    if _RE_SHORT_GENERIC.match(name_stripped):
+        return False, "generic filler"
+
+    # Concept-type specific checks (most noise is typed as "concept")
+    if ent_type == "concept":
+        if _RE_CSS_SELECTOR.match(name_stripped):
+            return False, "CSS selector"
+        if _RE_LINT_CODE.match(name_stripped):
+            return False, "lint code"
+        if _RE_CLI_FLAG.match(name_stripped):
+            return False, "CLI flag"
+        if _RE_ERROR_CODE.match(name_stripped):
+            return False, "error code"
+
+    # Generic labels that indicate the LLM gave no real name
+    if _RE_GENERIC_LABEL.match(label.strip()):
+        return False, "generic label"
+
+    return True, ""
 
 
 class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
@@ -297,12 +366,20 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
         resources.append(session_resource)
 
         entities = extracted_data.get("entities", [])
+        skipped = 0
         for ent in entities:
             ent_data = ent if isinstance(ent, dict) else json.loads(ent.model_dump_json())
             name = ent_data.get("name", "unknown")
-            ent_id = name.lower().replace(" ", "-").replace("/", "-")
             ent_type = ent_data.get("type", "concept")
             ent_label = ent_data.get("label", name)
+
+            valid, reason = _is_valid_entity(name, ent_type, ent_label)
+            if not valid:
+                skipped += 1
+                logger.debug("Filtered entity '%s' (%s): %s", name, ent_type, reason)
+                continue
+
+            ent_id = name.lower().replace(" ", "-").replace("/", "-")
             resource = Resource(
                 id=f"entity:{ent_id}",
                 type=ent_type,
@@ -316,6 +393,14 @@ class SessionIngestPipeline(KnowledgePipeline[dict[str, Any]]):
                 ingested_at=ingested_at,
             )
             resources.append(resource)
+
+        if skipped:
+            logger.info(
+                "Filtered %d/%d noise entities from session %s",
+                skipped,
+                len(entities),
+                session_id,
+            )
 
         return resources
 
