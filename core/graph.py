@@ -64,15 +64,15 @@ class Neo4jClient:
         """Build graph_id scoping clause. None graph_id preserves legacy unscoped behavior."""
         if graph_ids:
             if len(graph_ids) == 1:
-                return f"{prefix} {node_alias}.graph_id = $graph_id", {"graph_id": graph_ids[0]}
-            return f"{prefix} {node_alias}.graph_id IN $graph_ids", {"graph_ids": graph_ids}
+                return f" {prefix} {node_alias}.graph_id = $graph_id", {"graph_id": graph_ids[0]}
+            return f" {prefix} {node_alias}.graph_id IN $graph_ids", {"graph_ids": graph_ids}
         if graph_id is not None:
             if graph_id == DEFAULT_GRAPH_ID:
                 return (
-                    f"{prefix} ({node_alias}.graph_id IS NULL OR {node_alias}.graph_id = $graph_id)",
+                    f" {prefix} ({node_alias}.graph_id IS NULL OR {node_alias}.graph_id = $graph_id)",
                     {"graph_id": DEFAULT_GRAPH_ID},
                 )
-            return f"{prefix} {node_alias}.graph_id = $graph_id", {"graph_id": graph_id}
+            return f" {prefix} {node_alias}.graph_id = $graph_id", {"graph_id": graph_id}
         return "", {}
 
     def initialize_schema(self) -> None:
@@ -197,7 +197,7 @@ class Neo4jClient:
         graph_ids: list[str] | None = None,
     ) -> Resource | None:
         """Fetch a Resource by id."""
-        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="r", prefix="AND")
+        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="r", prefix="WHERE")
         query = f"MATCH (r:Resource {{id: $id}}){graph_clause} RETURN r"
         params: dict[str, Any] = {"id": resource_id, **graph_params}
         with self.driver.session(database=self._config.neo4j.database) as session:
@@ -565,7 +565,7 @@ class Neo4jClient:
         graph_ids: list[str] | None = None,
     ) -> PipelineCheckpoint | None:
         """Fetch the checkpoint for a pipeline."""
-        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="c", prefix="AND")
+        graph_clause, graph_params = self._graph_filter_clause(graph_id, graph_ids, node_alias="c", prefix="WHERE")
         query = f"MATCH (c:PipelineCheckpoint {{pipeline_name: $name}}){graph_clause} RETURN c"
         params: dict[str, Any] = {"name": pipeline_name, **graph_params}
         with self.driver.session(database=self._config.neo4j.database) as session:
